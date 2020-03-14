@@ -101,6 +101,11 @@ if [ ! -f data/input/offstreet_parking.kml ]; then
 	get_if_needed http://data-seattlecitygis.opendata.arcgis.com/datasets/8e52dfde6d5d45948f7a90654c8d50cd_0.kml data/input/offstreet_parking.kml;
 fi
 
+if [ ! -f data/input/collisions.kml ]; then
+	# From http://data-seattlecitygis.opendata.arcgis.com/datasets/5b5c745e0f1f48e7a53acec63a0022ab_0
+	get_if_needed https://opendata.arcgis.com/datasets/5b5c745e0f1f48e7a53acec63a0022ab_0.kml data/input/collisions.kml;
+fi
+
 cd convert_osm
 for poly in `ls ../data/input/polygons/`; do
 	name=`basename -s .poly $poly`;

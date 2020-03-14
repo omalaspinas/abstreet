@@ -13,7 +13,7 @@ use ezgui::{
     VerticalAlignment,
 };
 use geom::{Angle, Circle, Distance, Duration, Polygon, Pt2D, Statistic, Time};
-use map_model::{BuildingID, IntersectionID, IntersectionType};
+use map_model::{BuildingID, IntersectionID, IntersectionType, Map, Path, PathStep};
 use sim::{
     AgentID, Analytics, CarID, PersonID, PersonState, TripEnd, TripID, TripMode, TripPhaseType,
     TripResult, TripStart, VehicleType,
@@ -1139,6 +1139,7 @@ fn trip_details(
     let total_width = 0.3 * ctx.canvas.window_width;
     let mut timeline = Vec::new();
     let num_phases = phases.len();
+    let mut elevation = Vec::new();
     for (idx, p) in phases.into_iter().enumerate() {
         let color = match p.phase_type {
             TripPhaseType::Driving => Color::hex("#D63220"),
@@ -1227,6 +1228,16 @@ fn trip_details(
 
         // TODO Could really cache this between live updates
         if let Some((dist, ref path)) = p.path {
+            if p.phase_type == TripPhaseType::Walking || p.phase_type == TripPhaseType::Biking {
+                elevation.push(make_elevation(
+                    ctx,
+                    color,
+                    p.phase_type == TripPhaseType::Walking,
+                    path,
+                    map,
+                ));
+            }
+
             if let Some(trace) = path.trace(map, dist, None) {
                 unzoomed.push(color, trace.make_polygons(Distance::meters(10.0)));
                 zoomed.extend(
@@ -1256,6 +1267,7 @@ fn trip_details(
         .evenly_spaced()
         .margin_above(25)];
     col.extend(make_table(ctx, table));
+    col.extend(elevation);
     if let Some(p) = app.primary.sim.trip_to_person(trip) {
         col.push(
             ManagedWidget::btn(Button::text_bg(
@@ -1329,4 +1341,45 @@ fn strip_prefix_usize(x: &String, prefix: &str) -> Option<usize> {
     } else {
         None
     }
+}
+
+fn make_elevation(
+    ctx: &EventCtx,
+    color: Color,
+    walking: bool,
+    path: &Path,
+    map: &Map,
+) -> ManagedWidget {
+    let mut pts: Vec<(Distance, Distance)> = Vec::new();
+    let mut dist = Distance::ZERO;
+    for step in path.get_steps() {
+        if let PathStep::Turn(t) = step {
+            pts.push((dist, map.get_i(t.parent).elevation));
+        }
+        dist += step.as_traversable().length(map);
+    }
+    // TODO Plot needs to support Distance as both X and Y axis. :P
+    Plot::new_usize(
+        ctx,
+        vec![Series {
+            label: if walking {
+                "Elevation for walking"
+            } else {
+                "Elevation for biking"
+            }
+            .to_string(),
+            color,
+            pts: pts
+                .into_iter()
+                .map(|(x, y)| {
+                    (
+                        Time::START_OF_DAY + Duration::seconds(x.inner_meters()),
+                        y.inner_meters() as usize,
+                    )
+                })
+                .collect(),
+        }],
+        PlotOptions::new(),
+    )
+    .bg(colors::PANEL_BG)
 }

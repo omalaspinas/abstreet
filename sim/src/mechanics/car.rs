@@ -46,6 +46,8 @@ impl Car {
         if let Some(s) = self.vehicle.max_speed {
             let pct = on.percent_grade_uphill(map).unwrap_or(0.0);
             // Totally made up step function.
+            // TODO Would it be helpful to display some indication when an agent is crawling up
+            // something steep?
             let penalty = if pct < 0.01 {
                 // Flat, no penalty
                 1.0
