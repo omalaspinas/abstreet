@@ -3,6 +3,7 @@
 *.swp
 
 data/input/blockface.bin
+data/input/collisions.bin
 data/input/google_transit_2018_18_08
 data/input/neighborhoods
 data/input/neighborhoods.geojson
