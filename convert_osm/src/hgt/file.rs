@@ -152,8 +152,6 @@ impl HgtFile {
             let xi = x.floor() as i64;
             let yi = y.floor() as i64;
 
-            println!("xi is {}, yi is {}, samples is {}", xi, yi, samples);
-
             if xi > 0 && xi + 1 < samples && yi > 0 && yi + 1 < samples {
                 (xi as u16, yi as u16)
             } else {

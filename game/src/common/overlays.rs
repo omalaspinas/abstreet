@@ -619,12 +619,21 @@ impl Overlays {
     }
 
     fn elevation(ctx: &mut EventCtx, app: &App) -> Overlays {
+        // TODO Two passes because we have to construct the text first :(
+        let mut max = 0.0_f64;
+        for l in app.primary.map.all_lanes() {
+            let pct = l.percent_grade(&app.primary.map).abs();
+            max = max.max(pct);
+        }
+        let mut txt = Text::from(Line("elevation change"));
+        txt.add(Line(format!("Steepest road: {:.0}%", max * 100.0)));
+
         let awful = Color::hex("#801F1C");
         let bad = Color::hex("#EB5757");
         let meh = Color::hex("#F2C94C");
         let good = Color::hex("#7FFA4D");
         let mut colorer = Colorer::new(
-            Text::from(Line("elevation change")),
+            txt,
             vec![
                 (">= 15% (steep)", awful),
                 ("< 15%", bad),
@@ -633,8 +642,10 @@ impl Overlays {
             ],
         );
 
+        let mut max = 0.0_f64;
         for l in app.primary.map.all_lanes() {
             let pct = l.percent_grade(&app.primary.map).abs();
+            max = max.max(pct);
 
             let color = if pct < 0.01 {
                 good

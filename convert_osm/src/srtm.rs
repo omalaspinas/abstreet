@@ -14,9 +14,6 @@ impl Elevation {
     }
 
     pub fn get(&self, pt: LonLat) -> Distance {
-        println!("calc ele at {}", pt);
-        let e = Distance::meters(self.hgt.interpolate(pt.latitude, pt.longitude).unwrap());
-        println!("at {}, elevation is {}", pt, e);
-        e
+        Distance::meters(self.hgt.interpolate(pt.latitude, pt.longitude).unwrap())
     }
 }

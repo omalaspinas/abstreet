@@ -147,6 +147,7 @@ pub struct Vehicle {
     pub owner: Option<BuildingID>,
     pub vehicle_type: VehicleType,
     pub length: Distance,
+    // If set, this means the vehicle is also slower going uphills. Aka, it's a bike.
     pub max_speed: Option<Speed>,
 }
 
