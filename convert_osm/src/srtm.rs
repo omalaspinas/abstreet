@@ -3,13 +3,15 @@ use geom::{Distance, LonLat};
 use std::fs::File;
 use std::io;
 
+// https://github.com/grtlr/srtm/blob/master/src/lib.rs is reference code
+
 // TODO Make sure this actually works, and link to references describing the format.
 // - It's VERY wrong! Look at 19th and Boyer, and Delmar.
 // TODO Use http://gis.ess.washington.edu/data/raster/tenmeter/byquad/seattle/index.html or
 // something else instead?
 
-// Assuming the 3-second arcs
-const GRID_DIM: usize = 1201;
+// N47W122 is SRTM1
+const GRID_DIM: usize = 3601;
 
 pub struct Elevation {
     lon_offset: f64,
