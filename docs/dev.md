@@ -62,7 +62,7 @@ build everything totally from scratch by running
 You'll need some extra dependencies:
 
 - `osmconvert`: See https://wiki.openstreetmap.org/wiki/Osmconvert#Download
-- `cs2cs` from proj4: See https://proj.org
+- libgdal-dev
 
 Some tips:
 
