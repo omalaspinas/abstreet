@@ -255,4 +255,19 @@ impl Lane {
                 0
             })
     }
+
+    // Returns [-1.0, 1.0]. 0 is flat, positive is uphill, negative is downhill.
+    pub fn percent_grade(&self, map: &Map) -> f64 {
+        let rise = map.get_i(self.dst_i).elevation - map.get_i(self.src_i).elevation;
+        let run = self.length();
+        let grade = rise / run;
+        // TODO Elevation data is bad, clamp for sanity
+        if grade > 1.0 {
+            1.0
+        } else if grade < -1.0 {
+            -1.0
+        } else {
+            grade
+        }
+    }
 }

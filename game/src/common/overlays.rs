@@ -24,6 +24,7 @@ pub enum Overlays {
     CumulativeThroughput(Time, Colorer),
     BikeNetwork(Colorer),
     BusNetwork(Colorer),
+    Elevation(Colorer),
     Edits(Colorer),
     TripsHistogram(Time, Composite),
 
@@ -88,6 +89,7 @@ impl Overlays {
             Overlays::Inactive
             | Overlays::BikeNetwork(_)
             | Overlays::BusNetwork(_)
+            | Overlays::Elevation(_)
             | Overlays::Edits(_) => {}
         };
 
@@ -99,6 +101,7 @@ impl Overlays {
             Overlays::ParkingAvailability(_, ref mut heatmap)
             | Overlays::BikeNetwork(ref mut heatmap)
             | Overlays::BusNetwork(ref mut heatmap)
+            | Overlays::Elevation(ref mut heatmap)
             | Overlays::IntersectionDelay(_, ref mut heatmap)
             | Overlays::TrafficJams(_, ref mut heatmap)
             | Overlays::CumulativeThroughput(_, ref mut heatmap)
@@ -188,6 +191,7 @@ impl Overlays {
             Overlays::ParkingAvailability(_, ref heatmap)
             | Overlays::BikeNetwork(ref heatmap)
             | Overlays::BusNetwork(ref heatmap)
+            | Overlays::Elevation(ref heatmap)
             | Overlays::IntersectionDelay(_, ref heatmap)
             | Overlays::TrafficJams(_, ref heatmap)
             | Overlays::CumulativeThroughput(_, ref heatmap)
@@ -216,6 +220,7 @@ impl Overlays {
             Overlays::ParkingAvailability(_, ref heatmap)
             | Overlays::BikeNetwork(ref heatmap)
             | Overlays::BusNetwork(ref heatmap)
+            | Overlays::Elevation(ref heatmap)
             | Overlays::IntersectionDelay(_, ref heatmap)
             | Overlays::TrafficJams(_, ref heatmap)
             | Overlays::CumulativeThroughput(_, ref heatmap)
@@ -230,6 +235,7 @@ impl Overlays {
             WrappedComposite::text_button(ctx, "None", hotkey(Key::N)),
             WrappedComposite::text_button(ctx, "map edits", hotkey(Key::E)),
             WrappedComposite::text_button(ctx, "worst traffic jams", hotkey(Key::G)),
+            WrappedComposite::text_button(ctx, "elevation", hotkey(Key::S)),
             ManagedWidget::btn(Button::rectangle_svg(
                 "../data/system/assets/layers/parking_avail.svg",
                 "parking availability",
@@ -293,6 +299,9 @@ impl Overlays {
                 "bus network",
                 ManagedWidget::draw_svg(ctx, "../data/system/assets/layers/bus_network.svg"),
             )),
+            Overlays::Elevation(_) => {
+                Some(("elevation", Button::inactive_button(ctx, "elevation")))
+            }
             Overlays::Edits(_) => Some(("map edits", Button::inactive_button(ctx, "map edits"))),
             _ => None,
         } {
@@ -367,6 +376,13 @@ impl Overlays {
             "bus network",
             Box::new(|ctx, app| {
                 app.overlay = Overlays::bus_network(ctx, app);
+                Some(Transition::Pop)
+            }),
+        )
+        .maybe_cb(
+            "elevation",
+            Box::new(|ctx, app| {
+                app.overlay = Overlays::elevation(ctx, app);
                 Some(Transition::Pop)
             }),
         )
@@ -600,6 +616,39 @@ impl Overlays {
         }
 
         Overlays::BusNetwork(colorer.build(ctx, app))
+    }
+
+    fn elevation(ctx: &mut EventCtx, app: &App) -> Overlays {
+        let awful = Color::hex("#801F1C");
+        let bad = Color::hex("#EB5757");
+        let meh = Color::hex("#F2C94C");
+        let good = Color::hex("#7FFA4D");
+        let mut colorer = Colorer::new(
+            Text::from(Line("elevation change")),
+            vec![
+                (">= 15% (steep)", awful),
+                ("< 15%", bad),
+                ("< 5%", meh),
+                ("< 1% (flat)", good),
+            ],
+        );
+
+        for l in app.primary.map.all_lanes() {
+            let pct = l.percent_grade(&app.primary.map).abs();
+
+            let color = if pct < 0.01 {
+                good
+            } else if pct < 0.05 {
+                meh
+            } else if pct < 0.15 {
+                bad
+            } else {
+                awful
+            };
+            colorer.add_l(l.id, color, &app.primary.map);
+        }
+
+        Overlays::Elevation(colorer.build(ctx, app))
     }
 
     pub fn trips_histogram(ctx: &mut EventCtx, app: &App) -> Overlays {

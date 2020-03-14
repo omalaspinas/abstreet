@@ -454,6 +454,18 @@ fn info_for(
                             map.get_i(l.dst_i).elevation
                         ),
                     ));
+                    kv.push((
+                        "Incline / grade".to_string(),
+                        format!("{:.1}%", l.percent_grade(map) * 100.0),
+                    ));
+                    kv.push((
+                        "Elevation details".to_string(),
+                        format!(
+                            "{} over {}",
+                            map.get_i(l.dst_i).elevation - map.get_i,
+                            l.length()
+                        ),
+                    ));
 
                     for (k, v) in &r.osm_tags {
                         kv.push((k.to_string(), v.to_string()));
