@@ -1,4 +1,5 @@
 mod clip;
+mod hgt;
 mod neighborhoods;
 mod osm_reader;
 mod split_ways;

@@ -1,0 +1,9 @@
+From https://github.com/jackpot51/friar, MIT licensed. Temporarily trying out a less buggy SRTM reader.
+
+                let mut data = Vec::new();
+                zip_file.read_to_end(&mut data)?;
+
+                println!("  uncompressed {} bytes", data.len());
+
+                return HgtFile::new(latitude, longitude, resolution, data.into_boxed_slice());
+

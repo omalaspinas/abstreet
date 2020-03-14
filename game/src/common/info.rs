@@ -462,7 +462,7 @@ fn info_for(
                         "Elevation details".to_string(),
                         format!(
                             "{} over {}",
-                            map.get_i(l.dst_i).elevation - map.get_i,
+                            map.get_i(l.dst_i).elevation - map.get_i(l.src_i).elevation,
                             l.length()
                         ),
                     ));
