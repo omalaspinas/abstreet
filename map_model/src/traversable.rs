@@ -178,4 +178,20 @@ impl Traversable {
             Traversable::Turn(id) => map.get_i(id.parent).get_zorder(map),
         }
     }
+
+    pub fn percent_grade_uphill(&self, map: &Map) -> Option<f64> {
+        match *self {
+            Traversable::Lane(id) => {
+                let pct = map.get_l(id).percent_grade(map);
+                if pct < 0.0 {
+                    // Downhill
+                    None
+                } else {
+                    Some(pct)
+                }
+            }
+            // TODO Should we store elevation at lane endpoints instead?
+            Traversable::Turn(_) => None,
+        }
+    }
 }

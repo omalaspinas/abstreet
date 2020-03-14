@@ -44,7 +44,19 @@ impl Car {
         let on = self.router.head();
         let mut speed = on.speed_limit(map);
         if let Some(s) = self.vehicle.max_speed {
-            speed = speed.min(s);
+            let pct = on.percent_grade_uphill(map).unwrap_or(0.0);
+            // Totally made up step function.
+            let penalty = if pct < 0.01 {
+                // Flat, no penalty
+                1.0
+            } else if pct < 0.05 {
+                0.7
+            } else if pct < 0.15 {
+                0.4
+            } else {
+                0.2
+            };
+            speed = speed.min(penalty * s);
         }
         let dt = (dist_int.end - dist_int.start) / speed;
         CarState::Crossing(TimeInterval::new(start_time, start_time + dt), dist_int)
