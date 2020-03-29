@@ -147,11 +147,14 @@ pub fn rotating_color_map(idx: usize) -> Color {
 pub fn rotating_color_agents(idx: usize) -> Color {
     modulo_color(
         vec![
-            Color::hex("#5C45A0"),
-            Color::hex("#3E8BC3"),
-            Color::hex("#E1BA13"),
-            Color::hex("#96322F"),
-            Color::hex("#00A27B"),
+            /*Color::hex("#DD5444"),
+            Color::hex("#C23E46"),
+            Color::hex("#821B38"),
+            Color::hex("#BC3101"),*/
+            Color::hex("#F44273"),
+            Color::hex("#B53A7E"),
+            Color::hex("#FF616E"),
+            Color::hex("#FA8D37"),
         ],
         idx,
     )

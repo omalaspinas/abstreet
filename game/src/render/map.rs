@@ -209,7 +209,7 @@ impl DrawMap {
         timer.stop("upload all areas");
 
         let boundary_polygon = ctx.prerender.upload_borrowed(vec![(
-            cs.get_def("map background", Color::grey(0.87)),
+            cs.get_def("map background", Color::hex("#589D54")), //" 153F14")),
             map.get_boundary_polygon(),
         )]);
 

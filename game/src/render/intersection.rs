@@ -37,7 +37,7 @@ impl DrawIntersection {
             } else if i.is_closed() {
                 cs.get("construction background")
             } else {
-                cs.get_def("normal intersection", Color::grey(0.2))
+                cs.get_def("normal intersection", Color::hex("#4B5485"))
             },
             i.polygon.clone(),
         );

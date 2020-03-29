@@ -89,10 +89,10 @@ impl DrawLane {
         let mut draw = GeomBatch::new();
         draw.push(
             match lane.lane_type {
-                LaneType::Driving => cs.get_def("driving lane", Color::BLACK),
+                LaneType::Driving => cs.get_def("driving lane", Color::hex("#384173")),
                 LaneType::Bus => cs.get_def("bus lane", Color::rgb(190, 74, 76)),
-                LaneType::Parking => cs.get_def("parking lane", Color::grey(0.2)),
-                LaneType::Sidewalk => cs.get_def("sidewalk", Color::grey(0.8)),
+                LaneType::Parking => cs.get_def("parking lane", Color::hex("#4B5485")),
+                LaneType::Sidewalk => cs.get_def("sidewalk", Color::hex("#89ABD9")),
                 LaneType::Biking => cs.get_def("bike lane", Color::rgb(15, 125, 75)),
                 LaneType::SharedLeftTurn => cs.get("driving lane"),
                 LaneType::Construction => {
@@ -105,13 +105,13 @@ impl DrawLane {
             match lane.lane_type {
                 LaneType::Sidewalk => {
                     draw.extend(
-                        cs.get_def("sidewalk lines", Color::grey(0.7)),
+                        cs.get_def("sidewalk lines", Color::hex("#4B5485")),
                         calculate_sidewalk_lines(lane),
                     );
                 }
                 LaneType::Parking => {
                     draw.extend(
-                        cs.get_def("general road marking", Color::WHITE),
+                        cs.get_def("general road marking", Color::hex("#89ABD9")),
                         calculate_parking_lines(map, lane),
                     );
                 }

@@ -217,7 +217,7 @@ impl DrawPedCrowd {
         let blob = pl_shifted.make_polygons(SIDEWALK_THICKNESS / 2.0);
         let mut batch = GeomBatch::new();
         batch.push(
-            cs.get_def("pedestrian crowd", Color::rgb_f(0.2, 0.7, 0.7)),
+            cs.get_def("pedestrian crowd", Color::hex("#DD5444")),
             blob.clone(),
         );
         batch.add_transformed(

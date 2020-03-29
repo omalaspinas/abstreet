@@ -32,7 +32,7 @@ impl DrawBuilding {
         let front_path = front_path_line.make_polygons(Distance::meters(1.0));
 
         bldg_batch.push(
-            cs.get_def("building", Color::rgb(196, 193, 188)),
+            cs.get_def("building", Color::hex("#367335")), //#194C18")),
             bldg.polygon.clone(),
         );
         paths_batch.push(cs.get("sidewalk"), front_path);

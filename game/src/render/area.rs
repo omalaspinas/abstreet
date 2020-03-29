@@ -12,7 +12,7 @@ pub struct DrawArea {
 impl DrawArea {
     pub fn new(area: &Area, cs: &ColorScheme, all_areas: &mut GeomBatch) -> DrawArea {
         let color = match area.area_type {
-            AreaType::Park => cs.get_def("grass", Color::hex("#94C84A")),
+            AreaType::Park => cs.get_def("grass", Color::hex("#84BA3B")), //#2F8C2C")),
             AreaType::Water => cs.get_def("water", Color::rgb(164, 200, 234)),
             AreaType::PedestrianIsland => Color::grey(0.3),
         };
