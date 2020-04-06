@@ -1,6 +1,9 @@
 use ezgui::{Choice, Color, GeomBatch};
 use geom::{Bounds, Histogram, Polygon, Pt2D};
 use super::colormap::{earth, water, leeloo};
+use std::f64::EPSILON;
+
+const ONE_EPSILON: f64 = 1.0 - EPSILON * 100.0;
 
 #[derive(Clone, PartialEq)]
 pub struct HeatmapOptions {
@@ -61,7 +64,8 @@ pub fn make_heatmap(
         let r = opts.radius as isize;
         for x in base_x - r..=base_x + r {
             for y in base_y - r..=base_y + r {
-                if x > 0 && y > 0 && x < (grid.width as isize) && y < (grid.height as isize) {
+                let loc_r2 = (x - base_x) * (x - base_x) + (y - base_y) * (y - base_y);
+                if x > 0 && y > 0 && x < (grid.width as isize) && y < (grid.height as isize) && loc_r2 < r * r {
                     // https://en.wikipedia.org/wiki/Gaussian_function#Two-dimensional_Gaussian_function
                     // TODO Amplitude of 1 fine?
                     let value = (-(((x - base_x) as f64).powi(2) / denom
@@ -113,7 +117,7 @@ pub fn make_heatmap(
 
     // Now draw rectangles
     let square = Polygon::rectangle(opts.resolution as f64, opts.resolution as f64);
-    // let max_count = grid.data.iter().cloned().fold(0.0, f64::max);
+    // let max_count = grid.data.iter().cloned().fold(0.0, f64::max) + EPSILON*10.0;
     let mut cloned_data = grid.data.clone();
     cloned_data.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let max_ind = (0.9 * cloned_data.len() as f64) as usize;
@@ -124,10 +128,11 @@ pub fn make_heatmap(
             let idx = grid.idx(x, y);
             let count = grid.data[idx];
             if count > 0.0 {
-                let color = if count <= max_count {
-                    cmap.rgb_f(count / max_count)
+                let val = count / max_count;
+                let color = if val < ONE_EPSILON {
+                    cmap.rgb_f(val)
                 } else {
-                    cmap.rgb_f(1.0)
+                    cmap.rgb_f(ONE_EPSILON)
                 };
 
                 // let mut color = max_count_per_bucket[0].1;
