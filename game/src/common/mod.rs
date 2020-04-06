@@ -1,5 +1,6 @@
 mod bus_explorer;
 mod colors;
+mod colormap;
 mod heatmap;
 mod minimap;
 mod navigate;
