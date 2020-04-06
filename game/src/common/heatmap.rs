@@ -1,6 +1,6 @@
 use ezgui::{Choice, Color, GeomBatch};
 use geom::{Bounds, Histogram, Polygon, Pt2D};
-use super::colormap::earth;
+use super::colormap::{earth, water, leeloo};
 
 #[derive(Clone, PartialEq)]
 pub struct HeatmapOptions {
@@ -113,13 +113,23 @@ pub fn make_heatmap(
 
     // Now draw rectangles
     let square = Polygon::rectangle(opts.resolution as f64, opts.resolution as f64);
-    let max_count = grid.data.iter().cloned().fold(0.0, f64::max);
+    // let max_count = grid.data.iter().cloned().fold(0.0, f64::max);
+    let mut cloned_data = grid.data.clone();
+    cloned_data.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let max_ind = (0.9 * cloned_data.len() as f64) as usize;
+    let max_count = cloned_data[max_ind];
+    let cmap = leeloo();
     for y in 0..grid.height {
         for x in 0..grid.width {
             let idx = grid.idx(x, y);
             let count = grid.data[idx];
             if count > 0.0 {
-                let color = earth().rgb_f(count / max_count);
+                let color = if count <= max_count {
+                    cmap.rgb_f(count / max_count)
+                } else {
+                    cmap.rgb_f(1.0)
+                };
+
                 // let mut color = max_count_per_bucket[0].1;
                 // for (max, c) in &max_count_per_bucket {
                 //     if count >= *max {

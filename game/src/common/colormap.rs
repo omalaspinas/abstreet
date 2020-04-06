@@ -1,46 +1,63 @@
 // This code is inspired by the Palabos source code: www.palabos.org
-use geom::Pt2D;
+use ezgui::Color;
 use std::cmp::Ordering;
-use ezgui::{Color};
 use std::collections::BinaryHeap;
+
+struct Point2d {
+    x: f64,
+    y: f64,
+}
+
+impl Point2d {
+    fn new(x: f64, y: f64) -> Self {
+        Point2d { x, y }
+    }
+}
 
 trait ScalarFunction {
     fn compute(&self, x: f64) -> f64;
 }
 
 struct LinearFunction {
-    p1: Pt2D,
-    p2: Pt2D,
+    p1: Point2d,
+    p2: Point2d,
+}
+
+impl LinearFunction {
+    fn new(p1: Point2d, p2: Point2d) -> Self {
+        LinearFunction { p1, p2 }
+    }
 }
 
 impl ScalarFunction for LinearFunction {
     fn compute(&self, x: f64) -> f64 {
-        ((self.p2.y() - self.p1.y()) * x + self.p2.x() * self.p1.y() - self.p1.x() * self.p2.y())
-            / (self.p2.x() - self.p1.x())
+        assert!(self.p2.x != self.p1.x);
+        ((self.p2.y - self.p1.y) * x + self.p2.x * self.p1.y - self.p1.x * self.p2.y)
+            / (self.p2.x - self.p1.x)
     }
 }
 
 struct PowerLawFunction {
-    p1: Pt2D,
-    p2: Pt2D,
+    p1: Point2d,
+    p2: Point2d,
     b: f64,
 }
 
 impl PowerLawFunction {
-    fn new(p1: Pt2D, p2: Pt2D, b: f64) -> Self {
+    fn new(p1: Point2d, p2: Point2d, b: f64) -> Self {
         PowerLawFunction { p1, p2, b }
     }
 }
 
 impl ScalarFunction for PowerLawFunction {
     fn compute(&self, x: f64) -> f64 {
-        ((self.p2.y() - self.p1.y()) * x.powf(self.b) + self.p2.x() * self.p1.y()
-            - self.p1.x() * self.p2.y())
-            / (self.p2.x() - self.p1.x())
+        assert!(self.p2.x != self.p1.x);
+        ((self.p2.y - self.p1.y) * x.powf(self.b) + self.p2.x * self.p1.y - self.p1.x * self.p2.y)
+            / (self.p2.x - self.p1.x)
     }
 }
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, PartialOrd, Debug)]
 struct Piece {
     closed_begin: f64,
     open_end: f64,
@@ -111,15 +128,14 @@ impl PiecewiseFunction {
         }
     }
 
-    fn check_non_overlapping_piece(&self, piece: &Piece) -> bool {
-        !self
-            .functions
+    fn is_piece_overlapping(&self, piece: &Piece) -> bool {
+        self.functions
             .iter()
             .any(|f| f.piece.contains(piece.closed_begin) || f.piece.contains(piece.open_end))
     }
 
     fn add_piece(mut self, piece: Piece, foo: Box<dyn ScalarFunction>) -> Result<Self, String> {
-        if self.check_non_overlapping_piece(&piece) {
+        if self.is_piece_overlapping(&piece) && self.functions.len() > 0 {
             return Err(String::from("Pieces are overlapping."));
         }
         self.functions.push(Function::new(piece, foo));
@@ -139,7 +155,6 @@ impl ScalarFunction for PiecewiseFunction {
     }
 }
 
-
 pub struct Colormap {
     red: PiecewiseFunction,
     green: PiecewiseFunction,
@@ -148,28 +163,36 @@ pub struct Colormap {
 
 impl Colormap {
     fn new(red: PiecewiseFunction, green: PiecewiseFunction, blue: PiecewiseFunction) -> Self {
-        Colormap{red, green, blue}
+        Colormap { red, green, blue }
     }
 
-    fn in_range(x: f64) -> Option<f64> {
-        if x >= 0.0 && x <= 1.0 {
-            return Some(x);
-        }
-        None
+    fn put_in_range(x: f64) -> f64 {
+        // if x < 0.0 {
+        //     return 0.0;
+        // } else if x > 1.0 {
+        //     return 1.0;
+        // } else {
+        //     return x;
+        // }
+        x
     }
 
     pub fn rgb_f(&self, x: f64) -> Color {
         assert!(x >= 0.0 && x <= 1.0);
+        // println!("x = {}", x);
         Color::rgb_f(
-            Colormap::in_range(self.red.compute(x)).unwrap() as f32,
-            Colormap::in_range(self.green.compute(x)).unwrap() as f32,
-            Colormap::in_range(self.blue.compute(x)).unwrap() as f32,
+            Colormap::put_in_range(self.red.compute(x)) as f32,
+            Colormap::put_in_range(self.green.compute(x)) as f32,
+            Colormap::put_in_range(self.blue.compute(x)) as f32,
         )
     }
 }
 
 pub fn earth() -> Colormap {
-    Colormap::new(generate_earth_red().unwrap(), generate_earth_green().unwrap(), generate_earth_blue().unwrap())
+    let red = generate_earth_red().unwrap();
+    let green = generate_earth_green().unwrap();
+    let blue = generate_earth_blue().unwrap();
+    Colormap::new(red, green, blue)
 }
 
 fn generate_earth_red() -> Result<PiecewiseFunction, String> {
@@ -182,24 +205,24 @@ fn generate_earth_red() -> Result<PiecewiseFunction, String> {
         .add_piece(
             Piece::new(p0, p1),
             Box::new(PowerLawFunction::new(
-                Pt2D::new(p0, p1),
-                Pt2D::new(0.0, 0.8),
+                Point2d::new(p0, 0.0),
+                Point2d::new(p1, 0.8),
                 0.6,
             )),
         )?
         .add_piece(
             Piece::new(p1, p2),
             Box::new(PowerLawFunction::new(
-                Pt2D::new(p1, p2),
-                Pt2D::new(0.8, 0.9),
+                Point2d::new(p1, 0.8),
+                Point2d::new(p2, 0.9),
                 0.9,
             )),
         )?
         .add_piece(
-            Piece::new(p1, p2),
+            Piece::new(p2, p3),
             Box::new(PowerLawFunction::new(
-                Pt2D::new(p2, p3),
-                Pt2D::new(0.9, 1.0),
+                Point2d::new(p2, 0.9),
+                Point2d::new(p3, 1.0),
                 0.2,
             )),
         )
@@ -215,24 +238,24 @@ fn generate_earth_green() -> Result<PiecewiseFunction, String> {
         .add_piece(
             Piece::new(p0, p1),
             Box::new(PowerLawFunction::new(
-                Pt2D::new(p0, p1),
-                Pt2D::new(0.0, 0.5),
+                Point2d::new(p0, 0.0),
+                Point2d::new(p1, 0.5),
                 0.6,
             )),
         )?
         .add_piece(
             Piece::new(p1, p2),
             Box::new(PowerLawFunction::new(
-                Pt2D::new(p1, p2),
-                Pt2D::new(0.5, 0.9),
+                Point2d::new(p1, 0.5),
+                Point2d::new(p2, 0.9),
                 0.2,
             )),
         )?
         .add_piece(
-            Piece::new(p1, p2),
+            Piece::new(p2, p3),
             Box::new(PowerLawFunction::new(
-                Pt2D::new(p2, p3),
-                Pt2D::new(0.9, 1.0),
+                Point2d::new(p2, 0.9),
+                Point2d::new(p3, 1.0),
                 0.2,
             )),
         )
@@ -248,25 +271,263 @@ fn generate_earth_blue() -> Result<PiecewiseFunction, String> {
         .add_piece(
             Piece::new(p0, p1),
             Box::new(PowerLawFunction::new(
-                Pt2D::new(p0, p1),
-                Pt2D::new(0.0, 0.5),
+                Point2d::new(p0, 0.0),
+                Point2d::new(p1, 0.5),
                 0.6,
             )),
         )?
         .add_piece(
             Piece::new(p1, p2),
             Box::new(PowerLawFunction::new(
-                Pt2D::new(p1, p2),
-                Pt2D::new(0.5, 0.7),
+                Point2d::new(p1, 0.5),
+                Point2d::new(p2, 0.7),
                 0.2,
+            )),
+        )?
+        .add_piece(
+            Piece::new(p2, p3),
+            Box::new(PowerLawFunction::new(
+                Point2d::new(p2, 0.7),
+                Point2d::new(p3, 1.0),
+                0.2,
+            )),
+        )
+}
+
+pub fn water() -> Colormap {
+    let red = generate_water_red().unwrap();
+    let green = generate_water_green().unwrap();
+    let blue = generate_water_blue().unwrap();
+    Colormap::new(red, green, blue)
+}
+
+fn generate_water_red() -> Result<PiecewiseFunction, String> {
+    let p0 = 0.0;
+    let p1 = 3.0 / 8.0;
+    let p2 = 6.0 / 8.0;
+    let p3 = 1.0;
+
+    PiecewiseFunction::new()
+        .add_piece(
+            Piece::new(p0, p1),
+            Box::new(PowerLawFunction::new(
+                Point2d::new(p0, 0.0),
+                Point2d::new(p1, 0.5),
+                0.6,
             )),
         )?
         .add_piece(
             Piece::new(p1, p2),
             Box::new(PowerLawFunction::new(
-                Pt2D::new(p2, p3),
-                Pt2D::new(0.7, 1.0),
+                Point2d::new(p1, 0.5),
+                Point2d::new(p2, 0.7),
                 0.2,
+            )),
+        )?
+        .add_piece(
+            Piece::new(p2, p3),
+            Box::new(PowerLawFunction::new(
+                Point2d::new(p2, 0.7),
+                Point2d::new(p3, 1.0),
+                0.2,
+            )),
+        )
+}
+
+fn generate_water_green() -> Result<PiecewiseFunction, String> {
+    let p0 = 0.0;
+    let p1 = 3.0 / 8.0;
+    let p2 = 6.0 / 8.0;
+    let p3 = 1.0;
+
+    PiecewiseFunction::new()
+        .add_piece(
+            Piece::new(p0, p1),
+            Box::new(PowerLawFunction::new(
+                Point2d::new(p0, 0.0),
+                Point2d::new(p1, 0.5),
+                0.6,
+            )),
+        )?
+        .add_piece(
+            Piece::new(p1, p2),
+            Box::new(PowerLawFunction::new(
+                Point2d::new(p1, 0.5),
+                Point2d::new(p2, 0.9),
+                0.2,
+            )),
+        )?
+        .add_piece(
+            Piece::new(p2, p3),
+            Box::new(PowerLawFunction::new(
+                Point2d::new(p2, 0.9),
+                Point2d::new(p3, 1.0),
+                0.2,
+            )),
+        )
+}
+
+fn generate_water_blue() -> Result<PiecewiseFunction, String> {
+    let p0 = 0.0;
+    let p1 = 3.0 / 8.0;
+    let p2 = 6.0 / 8.0;
+    let p3 = 1.0;
+
+    PiecewiseFunction::new()
+        .add_piece(
+            Piece::new(p0, p1),
+            Box::new(PowerLawFunction::new(
+                Point2d::new(p0, 0.0),
+                Point2d::new(p1, 0.8),
+                0.6,
+            )),
+        )?
+        .add_piece(
+            Piece::new(p1, p2),
+            Box::new(PowerLawFunction::new(
+                Point2d::new(p1, 0.8),
+                Point2d::new(p2, 0.9),
+                0.9,
+            )),
+        )?
+        .add_piece(
+            Piece::new(p2, p3),
+            Box::new(PowerLawFunction::new(
+                Point2d::new(p2, 0.9),
+                Point2d::new(p3, 1.0),
+                0.2,
+            )),
+        )
+}
+
+pub fn leeloo() -> Colormap {
+    let red = generate_leeloo_red().unwrap();
+    let green = generate_leeloo_green().unwrap();
+    let blue = generate_leeloo_blue().unwrap();
+    Colormap::new(red, green, blue)
+}
+
+fn generate_leeloo_red() -> Result<PiecewiseFunction, String> {
+    let p0 = 0.0;
+    let p2 = 3.0 / 8.0;
+    let p3 = 5.0 / 8.0;
+    let p4 = 7.0 / 8.0;
+    let p5 = 1.0;
+    let p6 = 9.0 / 8.0;
+
+    PiecewiseFunction::new()
+        .add_piece(
+            Piece::new(p0, p2),
+            Box::new(LinearFunction::new(
+                Point2d::new(p0, 0.0),
+                Point2d::new(p2, 0.0),
+            )),
+        )?
+        .add_piece(
+            Piece::new(p2, p3),
+            Box::new(LinearFunction::new(
+                Point2d::new(p2, 0.0),
+                Point2d::new(p3, 1.0),
+            )),
+        )?
+        .add_piece(
+            Piece::new(p3, p4),
+            Box::new(LinearFunction::new(
+                Point2d::new(p3, 1.0),
+                Point2d::new(p4, 1.0),
+            )),
+        )?
+        .add_piece(
+            Piece::new(p4, p5),
+            Box::new(LinearFunction::new(
+                Point2d::new(p4, 1.0),
+                Point2d::new(p6, 0.0),
+            )),
+        )
+}
+
+fn generate_leeloo_green() -> Result<PiecewiseFunction, String> {
+    let p0  =  0.0;
+    let p1  =  1.0/8.0;
+    let p2  =  3.0/8.0;
+    let p3  =  5.0/8.0;
+    let p4  =  7.0/8.0;
+    let p5  =  1.0;
+    let p6  =  9.0/8.0;
+
+    PiecewiseFunction::new()
+        .add_piece(
+            Piece::new(p0, p1),
+            Box::new(LinearFunction::new(
+                Point2d::new(p0, 0.0),
+                Point2d::new(p1, 0.0),
+            )),
+        )?
+        .add_piece(
+            Piece::new(p1, p2),
+            Box::new(LinearFunction::new(
+                Point2d::new(p1, 0.0),
+                Point2d::new(p2, 1.0),
+            )),
+        )?
+        .add_piece(
+            Piece::new(p2, p3),
+            Box::new(LinearFunction::new(
+                Point2d::new(p2, 1.0),
+                Point2d::new(p3, 1.0),
+            )),
+        )?
+        .add_piece(
+            Piece::new(p3, p4),
+            Box::new(LinearFunction::new(
+                Point2d::new(p3, 1.0),
+                Point2d::new(p4, 0.0),
+            )),
+        )?
+        .add_piece(
+            Piece::new(p4, p5),
+            Box::new(LinearFunction::new(
+                Point2d::new(p4, 0.0),
+                Point2d::new(p6, 0.0),
+            )),
+        )
+}
+
+fn generate_leeloo_blue() -> Result<PiecewiseFunction, String> {
+    let pm1 =  -1.0/8.0;
+    let p0  =  0.0;
+    let p1  =  1.0/8.0;
+    let p2  =  3.0/8.0;
+    let p3  =  5.0/8.0;
+    let p5  =  1.0;
+
+    PiecewiseFunction::new()
+        .add_piece(
+            Piece::new(p0, p1),
+            Box::new(LinearFunction::new(
+                Point2d::new(pm1, 0.0),
+                Point2d::new(p1, 1.0),
+            )),
+        )?
+        .add_piece(
+            Piece::new(p1, p2),
+            Box::new(LinearFunction::new(
+                Point2d::new(p1, 1.0),
+                Point2d::new(p2, 1.0),
+            )),
+        )?
+        .add_piece(
+            Piece::new(p2, p3),
+            Box::new(LinearFunction::new(
+                Point2d::new(p2, 1.0),
+                Point2d::new(p3, 0.0),
+            )),
+        )?
+        .add_piece(
+            Piece::new(p3, p5),
+            Box::new(LinearFunction::new(
+                Point2d::new(p3, 0.0),
+                Point2d::new(p5, 0.0),
             )),
         )
 }
