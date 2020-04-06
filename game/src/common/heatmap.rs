@@ -1,9 +1,10 @@
 use ezgui::{Choice, Color, GeomBatch};
-use geom::{Bounds, Histogram, Polygon, Pt2D};
+use geom::{Circle, Distance, Bounds, Histogram, Polygon, Pt2D};
 use super::colormap::{earth, water, leeloo};
 use std::f64::EPSILON;
 
 const ONE_EPSILON: f64 = 1.0 - EPSILON * 100.0;
+const C: [[isize; 2]; 9] = [[0, 0], [-1, 1], [-1, 0], [-1, -1], [ 0, -1], [1, -1], [ 1, 0], [1, 1], [ 0, 1]];
 
 #[derive(Clone, PartialEq)]
 pub struct HeatmapOptions {
@@ -59,13 +60,14 @@ pub fn make_heatmap(
     for pt in pts {
         let base_x = ((pt.x() - bounds.min_x) / opts.resolution as f64) as isize;
         let base_y = ((pt.y() - bounds.min_y) / opts.resolution as f64) as isize;
-        let denom = 2.0 * (opts.radius as f64).powi(2);
+        let denom = 2.0 * (opts.radius as f64  / 2.0).powi(2);
 
         let r = opts.radius as isize;
         for x in base_x - r..=base_x + r {
             for y in base_y - r..=base_y + r {
-                let loc_r2 = (x - base_x) * (x - base_x) + (y - base_y) * (y - base_y);
-                if x > 0 && y > 0 && x < (grid.width as isize) && y < (grid.height as isize) && loc_r2 < r * r {
+                let loc_r2 = (x - base_x).pow(2) + (y - base_y).pow(2);
+                if x > 0 && y > 0 && x < (grid.width as isize) && y < (grid.height as isize) && loc_r2 <= r * r {
+                    println!("{} {}", x, y);
                     // https://en.wikipedia.org/wiki/Gaussian_function#Two-dimensional_Gaussian_function
                     // TODO Amplitude of 1 fine?
                     let value = (-(((x - base_x) as f64).powi(2) / denom
@@ -115,18 +117,45 @@ pub fn make_heatmap(
         .zip(colors.into_iter())
         .collect();
 
-    // Now draw rectangles
-    let square = Polygon::rectangle(opts.resolution as f64, opts.resolution as f64);
-    // let max_count = grid.data.iter().cloned().fold(0.0, f64::max) + EPSILON*10.0;
-    let mut cloned_data = grid.data.clone();
-    cloned_data.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let max_ind = (0.9 * cloned_data.len() as f64) as usize;
-    let max_count = cloned_data[max_ind];
-    let cmap = leeloo();
+    let mut cgrid: Grid<f64> = Grid::new(
+        (bounds.width() / opts.resolution as f64).ceil() as usize,
+        (bounds.height() / opts.resolution as f64).ceil() as usize,
+        0.0,
+    );
+
     for y in 0..grid.height {
         for x in 0..grid.width {
-            let idx = grid.idx(x, y);
-            let count = grid.data[idx];
+            let mut div = 1;
+            let idx = cgrid.idx(x, y);
+            cgrid.data[idx] = grid.data[idx];
+            for i in 1..9 {
+                let next_x = x as isize + C[i][0];
+                let next_y = y as isize + C[i][1];
+                if next_x > 0 && next_y > 0 && next_x < (grid.width as isize) && next_y < (grid.height as isize) {
+                    div += 1;
+                    let next_idx = cgrid.idx(next_x as usize, next_y as usize);
+                    cgrid.data[idx] += grid.data[next_idx];
+                }
+            }
+            cgrid.data[idx] /= div as f64;
+            
+        }
+    }
+
+
+    // Now draw rectangles
+    let square = Polygon::rectangle(opts.resolution as f64, opts.resolution as f64);
+    // let square = Circle::new(Pt2D::new(0.0, 0.0), Distance::meters(opts.resolution as f64)).to_polygon();
+    let max_count = cgrid.data.iter().map(|x| x.log(2.0)).fold(0.0, f64::max) + EPSILON*10.0;
+    // let mut cloned_data = cgrid.data.clone();
+    // cloned_data.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // let max_ind = (0.99 * cloned_data.len() as f64) as usize;
+    // let max_count = cloned_data[max_ind];
+    let cmap = leeloo();
+    for y in 0..cgrid.height {
+        for x in 0..cgrid.width {
+            let idx = cgrid.idx(x, y);
+            let count = cgrid.data[idx].log(2.0);
             if count > 0.0 {
                 let val = count / max_count;
                 let color = if val < ONE_EPSILON {
