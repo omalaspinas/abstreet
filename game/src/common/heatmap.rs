@@ -67,7 +67,6 @@ pub fn make_heatmap(
             for y in base_y - r..=base_y + r {
                 let loc_r2 = (x - base_x).pow(2) + (y - base_y).pow(2);
                 if x > 0 && y > 0 && x < (grid.width as isize) && y < (grid.height as isize) && loc_r2 <= r * r {
-                    println!("{} {}", x, y);
                     // https://en.wikipedia.org/wiki/Gaussian_function#Two-dimensional_Gaussian_function
                     // TODO Amplitude of 1 fine?
                     let value = (-(((x - base_x) as f64).powi(2) / denom
@@ -146,16 +145,17 @@ pub fn make_heatmap(
     // Now draw rectangles
     let square = Polygon::rectangle(opts.resolution as f64, opts.resolution as f64);
     // let square = Circle::new(Pt2D::new(0.0, 0.0), Distance::meters(opts.resolution as f64)).to_polygon();
-    let max_count = cgrid.data.iter().map(|x| x.log(2.0)).fold(0.0, f64::max) + EPSILON*10.0;
-    // let mut cloned_data = cgrid.data.clone();
-    // cloned_data.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    // let max_ind = (0.99 * cloned_data.len() as f64) as usize;
-    // let max_count = cloned_data[max_ind];
+    // let max_count = cgrid.data.iter().map(|x| x.log(2.0)).fold(0.0, f64::max) + EPSILON*10.0;
+    let mut cloned_data = cgrid.data.clone();
+    cloned_data.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let max_ind = (0.99 * cloned_data.len() as f64) as usize;
+    let max_count = cloned_data[max_ind];
     let cmap = leeloo();
     for y in 0..cgrid.height {
         for x in 0..cgrid.width {
             let idx = cgrid.idx(x, y);
-            let count = cgrid.data[idx].log(2.0);
+            // let count = cgrid.data[idx].log(2.0);
+            let count = cgrid.data[idx];
             if count > 0.0 {
                 let val = count / max_count;
                 let color = if val < ONE_EPSILON {
