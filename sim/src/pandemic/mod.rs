@@ -4,12 +4,53 @@ mod prob;
 use geom::Duration;
 pub use pandemic::{Cmd, PandemicModel};
 pub use prob::{erf_distrib_bounded, proba_decaying_sigmoid};
+use rand::Rng;
+use rand_xorshift::XorShiftRng;
 
 pub enum SEIR {
     Sane,
     Exposed,
     Infectious,
+    // Hospitalized,
     Recovered,
+}
+
+pub enum SeirEvent {
+    Exposition(f64),
+    Incubation(f64),
+    // Hospitalization(f64),
+    Recovery(f64),
+}
+
+// TODO not clear if Option<SeirEvent> is needed
+fn transition(state: SEIR, maybe_event: Option<SeirEvent>, rng: &mut XorShiftRng) -> SEIR {
+    match maybe_event {
+        None => state,
+        Some(event) => match (state, event) {
+            (s @ SEIR::Sane, SeirEvent::Exposition(prob)) => {
+                if rng.gen_bool(prob) {
+                    SEIR::Exposed
+                } else {
+                    s
+                }
+            }
+            (s @ SEIR::Exposed, SeirEvent::Incubation(prob)) => {
+                if rng.gen_bool(prob) {
+                    SEIR::Infectious
+                } else {
+                    s
+                }
+            }
+            (s @ SEIR::Infectious, SeirEvent::Recovery(prob)) => {
+                if rng.gen_bool(prob) {
+                    SEIR::Recovered
+                } else {
+                    s
+                }
+            }
+            _ => unreachable!(),
+        },
+    }
 }
 
 impl SEIR {

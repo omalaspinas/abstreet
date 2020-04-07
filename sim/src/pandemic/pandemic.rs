@@ -21,8 +21,8 @@ pub struct PandemicModel {
     pub exposed: BTreeMap<PersonID, (Time, Time)>,
     pub infected: BTreeMap<PersonID, (Time, Time)>,
     pub recovered: BTreeSet<PersonID>,
-    hospitalized: BTreeSet<PersonID>,
-    quarantined: BTreeSet<PersonID>,
+    pub hospitalized: BTreeSet<PersonID>,
+    pub quarantined: BTreeSet<PersonID>,
 
     bldgs: SharedSpace<BuildingID>,
     bus_stops: SharedSpace<BusStopID>,
