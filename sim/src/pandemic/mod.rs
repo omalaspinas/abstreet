@@ -7,6 +7,7 @@ pub use prob::{erf_distrib_bounded, proba_decaying_sigmoid};
 use rand::Rng;
 use rand_xorshift::XorShiftRng;
 
+#[derive(PartialEq, Clone, Copy)]
 pub enum SEIR {
     Sane,
     Exposed,
@@ -22,32 +23,22 @@ pub enum SeirEvent {
     Recovery(f64),
 }
 
+fn is_chosen_or(new_state: SEIR, old_state: SEIR, rng: &mut XorShiftRng, prob: f64) -> SEIR {
+    if rng.gen_bool(prob) {
+        new_state
+    } else {
+        old_state
+    }
+}
+
 // TODO not clear if Option<SeirEvent> is needed
-fn transition(state: SEIR, maybe_event: Option<SeirEvent>, rng: &mut XorShiftRng) -> SEIR {
+pub fn transition(state: SEIR, maybe_event: Option<SeirEvent>, rng: &mut XorShiftRng) -> SEIR {
     match maybe_event {
         None => state,
         Some(event) => match (state, event) {
-            (s @ SEIR::Sane, SeirEvent::Exposition(prob)) => {
-                if rng.gen_bool(prob) {
-                    SEIR::Exposed
-                } else {
-                    s
-                }
-            }
-            (s @ SEIR::Exposed, SeirEvent::Incubation(prob)) => {
-                if rng.gen_bool(prob) {
-                    SEIR::Infectious
-                } else {
-                    s
-                }
-            }
-            (s @ SEIR::Infectious, SeirEvent::Recovery(prob)) => {
-                if rng.gen_bool(prob) {
-                    SEIR::Recovered
-                } else {
-                    s
-                }
-            }
+            (s @ SEIR::Sane, SeirEvent::Exposition(prob)) => is_chosen_or(SEIR::Exposed, s, rng, prob),
+            (s @ SEIR::Exposed, SeirEvent::Incubation(prob)) => is_chosen_or(SEIR::Infectious, s, rng, prob),
+            (s @ SEIR::Infectious, SeirEvent::Recovery(prob)) => is_chosen_or(SEIR::Recovered, s, rng, prob),
             _ => unreachable!(),
         },
     }

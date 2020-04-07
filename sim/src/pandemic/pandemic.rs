@@ -1,5 +1,5 @@
-use crate::pandemic::SEIR;
 use crate::pandemic::{erf_distrib_bounded, proba_decaying_sigmoid};
+use crate::pandemic::{transition, SeirEvent, SEIR};
 use crate::{CarID, Event, Person, PersonID, Scheduler, TripPhaseType};
 use geom::{Duration, Time};
 use map_model::{BuildingID, BusStopID};
@@ -14,10 +14,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone)]
 pub struct PandemicModel {
-    pub sane: BTreeSet<PersonID>,
     // first time is the time of exposition/infection
     // second time is the time since the last check of
     // transition was performed
+    pub sane: BTreeSet<PersonID>,
     pub exposed: BTreeMap<PersonID, (Time, Time)>,
     pub infected: BTreeMap<PersonID, (Time, Time)>,
     pub recovered: BTreeSet<PersonID>,
@@ -65,6 +65,21 @@ impl PandemicModel {
 
             rng,
             initialized: false,
+        }
+    }
+
+    fn get_state(&self, person: PersonID) -> (SEIR, Option<(Time, Time)>) {
+        assert!(self.initialized);
+        if let Some(_) = self.sane.get(&person) {
+            (SEIR::Sane, None)
+        } else if let Some((t0, t1)) = self.exposed.get(&person) {
+            (SEIR::Exposed, Some((*t0, *t1)))
+        } else if let Some((t0, t1)) = self.infected.get(&person) {
+            (SEIR::Infectious, Some((*t0, *t1)))
+        } else if let Some(_) = self.recovered.get(&person) {
+            (SEIR::Recovered, None)
+        } else {
+            panic!("Error the person has no valid state.")
         }
     }
 
@@ -195,38 +210,78 @@ impl PandemicModel {
     // transition from a state to another without interaction with others
     fn transition(&mut self, now: Time, person: PersonID, scheduler: &mut Scheduler) {
         // person has spent some duration in the same space as other people. Does transmission
-        // occur?
-        if let Some((t0, last_check)) = self.infected.get(&person).cloned() {
-            // let dt = now - *t0;
-            if self.recovery_occurs(
-                last_check,
-                now,
-                t0 + SEIR::get_transition_time_from(SEIR::Infectious),
-                SEIR::get_transition_time_uncertainty_from(SEIR::Infectious),
-            ) {
-                self.transition_to_recovered(now, person, scheduler);
-            // TODO add an else if with hospitalized
-            } else {
-                // We rather store the last moment
-                self.stay_infected(t0, now, person, scheduler);
+        // occur?self
+        match self.get_state(person) {
+            (s @ SEIR::Infectious, Some((t0, last_check))) => {
+                let new_state = super::pandemic::transition(
+                    s,
+                    Some(SeirEvent::Recovery(erf_distrib_bounded(
+                        last_check.inner_seconds(),
+                        now.inner_seconds(),
+                        (t0 + SEIR::get_transition_time_from(s)).inner_seconds(),
+                        (SEIR::get_transition_time_uncertainty_from(s))
+                            .inner_seconds(),
+                    ))),
+                    &mut self.rng,
+                );
+                if s == new_state {
+                    self.replace(s, person, Some((t0, now)));
+                } else {
+                    // Going to decovery so no time is needed
+                    self.do_transition(s, new_state, None, person, scheduler);
+                }
             }
+            (s @ SEIR::Exposed, Some((t0, last_check))) => {
+                let new_state = super::pandemic::transition(
+                    s,
+                    Some(SeirEvent::Incubation(erf_distrib_bounded(
+                        last_check.inner_seconds(),
+                        now.inner_seconds(),
+                        (t0 + SEIR::get_transition_time_from(s)).inner_seconds(),
+                        (SEIR::get_transition_time_uncertainty_from(s))
+                            .inner_seconds(),
+                    ))),
+                    &mut self.rng,
+                );
+                if s == new_state {
+                    self.replace(s, person, Some((t0, now)));
+                } else {
+                    self.do_transition(s, new_state, Some(now), person, scheduler);
+                }
+            }
+            _ => return,
         }
+        // if let Some((t0, last_check)) = self.infected.get(&person).cloned() {
+        //     // let dt = now - *t0;
+        //     if self.recovery_occurs(
+        //         last_check,
+        //         now,
+        //         t0 + SEIR::get_transition_time_from(SEIR::Infectious),
+        //         SEIR::get_transition_time_uncertainty_from(SEIR::Infectious),
+        //     ) {
+        //         self.transition_to_recovered(now, person, scheduler);
+        //     // TODO add an else if with hospitalized
+        //     } else {
+        //         // We rather store the last moment
+        //         self.stay_infected(t0, now, person, scheduler);
+        //     }
+        // }
 
-        let exp_pers = self.exposed.get(&person).map(|pers| *pers);
-        if let Some((t0, last_check)) = exp_pers {
-            // let dt = now - *t0;
-            if self.infection_occurs(
-                last_check,
-                now,
-                t0 + SEIR::get_transition_time_from(SEIR::Exposed),
-                SEIR::get_transition_time_uncertainty_from(SEIR::Exposed),
-            ) {
-                self.transition_to_infected(now, person, scheduler);
-            } else {
-                // We rather store the last moment
-                self.stay_exposed(t0, now, person, scheduler);
-            }
-        }
+        // let exp_pers = self.exposed.get(&person).map(|pers| *pers);
+        // if let Some((t0, last_check)) = exp_pers {
+        //     // let dt = now - *t0;
+        //     if self.infection_occurs(
+        //         last_check,
+        //         now,
+        //         t0 + SEIR::get_transition_time_from(SEIR::Exposed),
+        //         SEIR::get_transition_time_uncertainty_from(SEIR::Exposed),
+        //     ) {
+        //         self.transition_to_infected(now, person, scheduler);
+        //     } else {
+        //         // We rather store the last moment
+        //         self.stay_exposed(t0, now, person, scheduler);
+        //     }
+        // }
     }
 
     fn might_become_exposed(&self, person: PersonID, other: PersonID) -> Option<PersonID> {
@@ -280,6 +335,64 @@ impl PandemicModel {
 
     fn become_recovered(&mut self, _now: Time, person: PersonID, _scheduler: &mut Scheduler) {
         self.recovered.insert(person);
+    }
+
+    fn remove(
+        &mut self,
+        state: SEIR,
+        person: PersonID,
+    ) {
+        match state {
+            SEIR::Sane => { self.sane.remove(&person); },
+            SEIR::Exposed => { self.exposed.remove(&person); },
+            SEIR::Infectious => { self.infected.remove(&person); },
+            SEIR::Recovered => { self.recovered.remove(&person); },
+        };
+    }
+
+    fn insert(
+        &mut self,
+        state: SEIR,
+        person: PersonID,
+        times: Option<(Time, Time)>
+    ) {
+        match times {
+            Some((t0, t1)) => {
+                match state {
+                    SEIR::Exposed => { self.exposed.insert(person, (t0, t1)); },
+                    SEIR::Infectious => { self.infected.insert(person, (t0, t1)); },
+                    _ => unreachable!()
+                };
+            },
+            None => {
+                match state {
+                    SEIR::Sane => { self.sane.insert(person); },
+                    SEIR::Recovered => { self.recovered.insert(person); },
+                    _ => unreachable!(),
+                };
+            }
+        }
+    }
+
+    fn do_transition(
+        &mut self,
+        old_state: SEIR,
+        new_state: SEIR,
+        now: Option<Time>,
+        person: PersonID,
+        _scheduler: &mut Scheduler,
+    ) {
+        self.remove(old_state, person);
+        self.insert(new_state, person, now.map(|t| (t, t)));
+    }
+
+    fn replace(
+        &mut self,
+        state: SEIR,
+        person: PersonID,
+        times: Option<(Time, Time)>,
+    ) {
+        self.insert(state, person, times);
     }
 
     fn transition_to_recovered(
