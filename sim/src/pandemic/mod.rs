@@ -3,9 +3,10 @@ mod prob;
 
 use geom::Duration;
 pub use pandemic::{Cmd, PandemicModel};
-pub use prob::{erf_distrib_bounded, proba_decaying_sigmoid};
+pub use prob::{erf_distrib_bounded, sigmoid_distrib};
 use rand::Rng;
 use rand_xorshift::XorShiftRng;
+use geom::Time;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum SEIR {
@@ -31,19 +32,6 @@ fn is_chosen_or(new_state: SEIR, old_state: SEIR, rng: &mut XorShiftRng, prob: f
     }
 }
 
-// TODO not clear if Option<SeirEvent> is needed
-pub fn transition(state: SEIR, maybe_event: Option<SeirEvent>, rng: &mut XorShiftRng) -> SEIR {
-    match maybe_event {
-        None => state,
-        Some(event) => match (state, event) {
-            (s @ SEIR::Sane, SeirEvent::Exposition(prob)) => is_chosen_or(SEIR::Exposed, s, rng, prob),
-            (s @ SEIR::Exposed, SeirEvent::Incubation(prob)) => is_chosen_or(SEIR::Infectious, s, rng, prob),
-            (s @ SEIR::Infectious, SeirEvent::Recovery(prob)) => is_chosen_or(SEIR::Recovered, s, rng, prob),
-            _ => unreachable!(),
-        },
-    }
-}
-
 impl SEIR {
     const T_INF: f64 = 3600.0 * 10.0; // TODO dummy values
     const T_INC: f64 = 3600.0; // TODO dummy values
@@ -52,6 +40,19 @@ impl SEIR {
     const E_RATIO: f64 = 0.005;
     const I_RATIO: f64 = 0.01;
     const R_RATIO: f64 = 0.0;
+
+    // TODO not clear if Option<SeirEvent> is needed
+    pub fn transition(self, maybe_event: Option<SeirEvent>, rng: &mut XorShiftRng) -> SEIR {
+        match maybe_event {
+            None => self,
+            Some(event) => match (self, event) {
+                (s @ SEIR::Sane, SeirEvent::Exposition(prob)) => is_chosen_or(SEIR::Exposed, s, rng, prob),
+                (s @ SEIR::Exposed, SeirEvent::Incubation(prob)) => is_chosen_or(SEIR::Infectious, s, rng, prob),
+                (s @ SEIR::Infectious, SeirEvent::Recovery(prob)) => is_chosen_or(SEIR::Recovered, s, rng, prob),
+                _ => unreachable!(),
+            },
+        }
+    }
 
     // TODO change that name it's bad
     pub fn get_transition_time_from(state: Self) -> Duration {

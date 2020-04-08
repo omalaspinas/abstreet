@@ -1,5 +1,5 @@
 // probability after a time t at a given rate
-pub fn proba_decaying_sigmoid(time: f64, rate: f64) -> f64 {
+pub fn sigmoid_distrib(time: f64, rate: f64) -> f64 {
     if time < 0.0 {
         panic!("Error the time must be always be positive but was {}", time);
     }
@@ -47,7 +47,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_time_sigmoid() {
-        proba_decaying_sigmoid(-1.0, 1.0);
+        sigmoid_distrib(-1.0, 1.0);
     }
 
     #[test]
@@ -56,7 +56,7 @@ mod tests {
         let max = 100;
         let mut rng = rand::thread_rng();
         for _ in 0..max {
-            prob_range(proba_decaying_sigmoid(
+            prob_range(sigmoid_distrib(
                 rng.gen::<f64>() * range,
                 rng.gen::<f64>() * range,
             ));

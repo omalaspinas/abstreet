@@ -1,5 +1,6 @@
-use crate::pandemic::{erf_distrib_bounded, proba_decaying_sigmoid};
-use crate::pandemic::{transition, SeirEvent, SEIR};
+use std::collections::HashMap;
+use crate::pandemic::{erf_distrib_bounded, sigmoid_distrib};
+use crate::pandemic::{SeirEvent, SEIR};
 use crate::{CarID, Event, Person, PersonID, Scheduler, TripPhaseType};
 use geom::{Duration, Time};
 use map_model::{BuildingID, BusStopID};
@@ -17,12 +18,14 @@ pub struct PandemicModel {
     // first time is the time of exposition/infection
     // second time is the time since the last check of
     // transition was performed
-    pub sane: BTreeSet<PersonID>,
+    pub sane: BTreeMap<PersonID, (Time, Time)>,
     pub exposed: BTreeMap<PersonID, (Time, Time)>,
     pub infected: BTreeMap<PersonID, (Time, Time)>,
     pub recovered: BTreeSet<PersonID>,
     pub hospitalized: BTreeSet<PersonID>,
     pub quarantined: BTreeSet<PersonID>,
+
+    pub persons: HashMap<PersonID, SEIR>,
 
     bldgs: SharedSpace<BuildingID>,
     bus_stops: SharedSpace<BusStopID>,
@@ -51,12 +54,14 @@ pub enum Cmd {
 impl PandemicModel {
     pub fn new(rng: XorShiftRng) -> PandemicModel {
         PandemicModel {
-            sane: BTreeSet::new(),
+            sane: BTreeMap::new(),
             exposed: BTreeMap::new(),
             infected: BTreeMap::new(),
             hospitalized: BTreeSet::new(),
             quarantined: BTreeSet::new(),
             recovered: BTreeSet::new(),
+
+            persons: HashMap::new(),
 
             bldgs: SharedSpace::new(),
             bus_stops: SharedSpace::new(),
@@ -70,8 +75,8 @@ impl PandemicModel {
 
     fn get_state(&self, person: PersonID) -> (SEIR, Option<(Time, Time)>) {
         assert!(self.initialized);
-        if let Some(_) = self.sane.get(&person) {
-            (SEIR::Sane, None)
+        if let Some((t0, t1)) = self.sane.get(&person) {
+            (SEIR::Sane, Some((*t0, *t1)))
         } else if let Some((t0, t1)) = self.exposed.get(&person) {
             (SEIR::Exposed, Some((*t0, *t1)))
         } else if let Some((t0, t1)) = self.infected.get(&person) {
@@ -91,7 +96,7 @@ impl PandemicModel {
 
         // Seed initially infected people.
         for p in population {
-            self.sane.insert(p.id);
+            self.sane.insert(p.id, (Time::START_OF_DAY, Time::START_OF_DAY));
             if self.rng.gen_bool(SEIR::get_initial_ratio(SEIR::Exposed)) {
                 self.become_exposed(Time::START_OF_DAY, p.id, scheduler);
             } else if self.rng.gen_bool(SEIR::get_initial_ratio(SEIR::Infectious)) {
@@ -200,9 +205,8 @@ impl PandemicModel {
         // occur?
         for (other, overlap) in other_occupants {
             if let Some(pid) = self.might_become_exposed(person, other) {
-                if self.exposition_occurs(overlap) {
-                    self.become_exposed(now, pid, scheduler);
-                }
+                self.sane.insert(pid, (now - overlap, now));
+                self.transition(now, pid, scheduler);
             }
         }
     }
@@ -213,8 +217,7 @@ impl PandemicModel {
         // occur?self
         match self.get_state(person) {
             (s @ SEIR::Infectious, Some((t0, last_check))) => {
-                let new_state = super::pandemic::transition(
-                    s,
+                let new_state = s.transition(
                     Some(SeirEvent::Recovery(erf_distrib_bounded(
                         last_check.inner_seconds(),
                         now.inner_seconds(),
@@ -232,8 +235,7 @@ impl PandemicModel {
                 }
             }
             (s @ SEIR::Exposed, Some((t0, last_check))) => {
-                let new_state = super::pandemic::transition(
-                    s,
+                let new_state = s.transition(
                     Some(SeirEvent::Incubation(erf_distrib_bounded(
                         last_check.inner_seconds(),
                         now.inner_seconds(),
@@ -249,45 +251,26 @@ impl PandemicModel {
                     self.do_transition(s, new_state, Some(now), person, scheduler);
                 }
             }
+            (s @ SEIR::Sane, Some((t0, t1))) => {
+                let new_state = s.transition(
+                    Some(SeirEvent::Exposition(sigmoid_distrib((t1 - t0).inner_seconds(), 1.0 / SEIR::get_transition_time_from(s).inner_seconds())
+                    )),
+                    &mut self.rng,
+                );
+                if s == new_state {
+                    self.replace(s, person, Some((now, now)));
+                } else {
+                    self.do_transition(s, new_state, Some(now), person, scheduler);
+                }
+            }
             _ => return,
         }
-        // if let Some((t0, last_check)) = self.infected.get(&person).cloned() {
-        //     // let dt = now - *t0;
-        //     if self.recovery_occurs(
-        //         last_check,
-        //         now,
-        //         t0 + SEIR::get_transition_time_from(SEIR::Infectious),
-        //         SEIR::get_transition_time_uncertainty_from(SEIR::Infectious),
-        //     ) {
-        //         self.transition_to_recovered(now, person, scheduler);
-        //     // TODO add an else if with hospitalized
-        //     } else {
-        //         // We rather store the last moment
-        //         self.stay_infected(t0, now, person, scheduler);
-        //     }
-        // }
-
-        // let exp_pers = self.exposed.get(&person).map(|pers| *pers);
-        // if let Some((t0, last_check)) = exp_pers {
-        //     // let dt = now - *t0;
-        //     if self.infection_occurs(
-        //         last_check,
-        //         now,
-        //         t0 + SEIR::get_transition_time_from(SEIR::Exposed),
-        //         SEIR::get_transition_time_uncertainty_from(SEIR::Exposed),
-        //     ) {
-        //         self.transition_to_infected(now, person, scheduler);
-        //     } else {
-        //         // We rather store the last moment
-        //         self.stay_exposed(t0, now, person, scheduler);
-        //     }
-        // }
     }
 
     fn might_become_exposed(&self, person: PersonID, other: PersonID) -> Option<PersonID> {
-        if self.infected.contains_key(&person) && self.sane.contains(&other) {
+        if self.infected.contains_key(&person) && self.sane.contains_key(&other) {
             return Some(other);
-        } else if self.sane.contains(&person) && self.infected.contains_key(&other) {
+        } else if self.sane.contains_key(&person) && self.infected.contains_key(&other) {
             return Some(person);
         }
         None
@@ -319,7 +302,7 @@ impl PandemicModel {
     fn exposition_occurs(&mut self, overlap: Duration) -> bool {
         let rate = 1.0 / SEIR::get_transition_time_from(SEIR::Sane).inner_seconds();
         self.rng
-            .gen_bool(proba_decaying_sigmoid(overlap.inner_seconds(), rate))
+            .gen_bool(sigmoid_distrib(overlap.inner_seconds(), rate))
     }
 
     fn become_exposed(&mut self, now: Time, person: PersonID, _scheduler: &mut Scheduler) {
@@ -361,12 +344,12 @@ impl PandemicModel {
                 match state {
                     SEIR::Exposed => { self.exposed.insert(person, (t0, t1)); },
                     SEIR::Infectious => { self.infected.insert(person, (t0, t1)); },
+                    SEIR::Sane => { self.sane.insert(person, (t0, t1)); },
                     _ => unreachable!()
                 };
             },
             None => {
                 match state {
-                    SEIR::Sane => { self.sane.insert(person); },
                     SEIR::Recovered => { self.recovered.insert(person); },
                     _ => unreachable!(),
                 };
