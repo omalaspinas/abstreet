@@ -609,7 +609,7 @@ impl Sim {
                     self.pandemic
                         .as_mut()
                         .unwrap()
-                        .handle_cmd(self.time, cmd, &mut self.scheduler);
+                        .handle_cmd(self.time, cmd, &self.walking, &mut self.scheduler);
                 }
             }
         }

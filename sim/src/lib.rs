@@ -3,6 +3,7 @@ mod events;
 mod make;
 mod mechanics;
 mod pandemic;
+mod grid;
 mod render;
 mod router;
 mod scheduler;

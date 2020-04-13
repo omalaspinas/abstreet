@@ -1,5 +1,5 @@
 use crate::pandemic::{AnyTime, State};
-use crate::{CarID, Event, Person, PersonID, Scheduler, TripPhaseType};
+use crate::{WalkingSimState, CarID, Command,Event, Person, PersonID, Scheduler, TripPhaseType};
 use geom::{Duration, Time};
 use map_model::{BuildingID, BusStopID};
 use rand::Rng;
@@ -27,6 +27,7 @@ pub struct PandemicModel {
 // You can schedule callbacks in the future by doing scheduler.push(future time, one of these)
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub enum Cmd {
+    Poll,
     BecomeHospitalized(PersonID),
     BecomeQuarantined(PersonID),
     CancelFutureTrips(PersonID),
@@ -201,7 +202,7 @@ impl PandemicModel {
         }
     }
 
-    pub fn handle_cmd(&mut self, _now: Time, cmd: Cmd, _scheduler: &mut Scheduler) {
+    pub fn handle_cmd(&mut self, now: Time, cmd: Cmd, walkers: &WalkingSimState, scheduler: &mut Scheduler) {
         assert!(self.initialized);
 
         // TODO Here we might enforce policies. Like severe -> become hospitalized
@@ -216,6 +217,12 @@ impl PandemicModel {
             }
             // This is handled by the rest of the simulation
             Cmd::CancelFutureTrips(_) => unreachable!(),
+            Cmd::Poll => {
+                scheduler.push(
+                    now + Duration::seconds(1.0),
+                    Command::Pandemic(Cmd::Poll),
+                );
+            }
         }
     }
 
