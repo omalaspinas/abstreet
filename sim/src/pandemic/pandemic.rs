@@ -46,9 +46,9 @@ pub enum Cmd {
 
 impl PandemicModel {
     pub fn new(bounds: &Bounds, spacing: Distance, delta_t: Duration, rng: XorShiftRng) -> PandemicModel {
-        let delta = spacing.inner_meters();
-        let nx = (bounds.width() * delta).ceil() as usize;
-        let ny = (bounds.height() * delta).ceil() as usize;
+        let dx = spacing.inner_meters();
+        let nx = (bounds.width() / dx).ceil() as usize;
+        let ny = (bounds.height() / dx).ceil() as usize;
 
         PandemicModel {
             pop: BTreeMap::new(),
@@ -245,8 +245,8 @@ impl PandemicModel {
                     }
                     }).collect::<Vec<Pt2D>>();
 
-                self.concentration.add_sources(&infectious_ped, map.get_bounds(), self.spacing.inner_meters(), 1.0, self.delta_t.inner_seconds());
-                self.concentration.diffuse(0.25, self.delta_t.inner_seconds(), self.spacing.inner_meters());
+                self.concentration.add_sources(&infectious_ped, map.get_bounds(), self.spacing.inner_meters(), self.delta_t.inner_seconds(), 1.0);
+                self.concentration.diffuse(0.25, self.spacing.inner_meters(), self.delta_t.inner_seconds());
                 // self.concentration.absorb(0.01);
                 if now.inner_seconds() as usize % 3600 == 0 {
                     // println!("{:?}", self.concentration);

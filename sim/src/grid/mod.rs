@@ -45,7 +45,7 @@ impl Grid {
     // d / dt phi (x, y, t) = kappa * (d² / dx² + d² / dy²) phi (x, y, t)
     // or phi(x, y, t + dt) = phi(x, y, t) +
     //     dt * kappa / dx² * ( phi(x+dx, t) + phi(x - dx, y, t) + phi(x, y + dy t) + phi(x, y - dy, t) - 4 * phi(x, y, t))
-    pub fn diffuse(&mut self, kappa: f64, dt: f64, dx: f64) {
+    pub fn diffuse(&mut self, kappa: f64, dx: f64, dt: f64) {
         let cpy = self.clone();
         for x in 1..self.width - 1 {
             for y in 1..self.height - 1 {
@@ -69,18 +69,21 @@ impl Grid {
         walkers: &Vec<Pt2D>,
         bounds: &Bounds,
         dx: f64,
-        mag_per_sec: f64,
         dt: f64,
+        mag_per_sec: f64,
     ) {
         for w in walkers {
-            let x = ((w.x() - bounds.min_x) * dx) as usize;
-            let y = ((w.y() - bounds.min_x) * dx) as usize;
+            let x = ((w.x() - bounds.min_x) / dx).floor() as usize;
+            let y = ((w.y() - bounds.min_y) / dx).floor() as usize;
+
+            println!("x = {}, y = {}, w.x() = {}, w.y() = {}", x, y, w.x(), w.y());
+
 
             self[(x, y)] += dt * mag_per_sec;
-            self[(x+1, y)] += dt * mag_per_sec;
-            self[(x-1, y)] += dt * mag_per_sec;
-            self[(x, y+1)] += dt * mag_per_sec;
-            self[(x, y-1)] += dt * mag_per_sec;
+            // self[(x+1, y)] += dt * mag_per_sec;
+            // self[(x-1, y)] += dt * mag_per_sec;
+            // self[(x, y+1)] += dt * mag_per_sec;
+            // self[(x, y-1)] += dt * mag_per_sec;
         }
     }
 
@@ -91,11 +94,11 @@ impl Grid {
         root.fill(&WHITE).unwrap();
 
         let mut chart = ChartBuilder::on(&root)
-            .caption("Matshow Example", ("sans-serif", 80))
+            .caption("Virus by pedestrians", ("sans-serif", 10))
             .margin(5)
             .top_x_label_area_size(40)
             .y_label_area_size(40)
-            .build_ranged(0i32..self.width as i32, 15i32..self.height as i32).unwrap();
+            .build_ranged(0i32..self.width as i32, 0i32..self.height as i32).unwrap();
 
         chart
             .configure_mesh()
@@ -105,7 +108,7 @@ impl Grid {
             .y_label_offset(25)
             .disable_x_mesh()
             .disable_y_mesh()
-            .label_style(("sans-serif", 20))
+            .label_style(("sans-serif", 10))
             .draw().unwrap();
 
         let plotting_area = chart.plotting_area();
