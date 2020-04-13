@@ -113,7 +113,7 @@ impl Sim {
             transit: TransitSimState::new(),
             trips: TripManager::new(),
             pandemic: if let Some(rng) = opts.enable_pandemic_model {
-                Some(PandemicModel::new(map.get_bounds(), Distance::meters(1.0), rng))
+                Some(PandemicModel::new(map.get_bounds(), Distance::meters(1.0), Duration::seconds(1.0), rng))
             } else {
                 None
             },

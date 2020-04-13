@@ -1,6 +1,6 @@
 use crate::pandemic::{AnyTime, State};
 use crate::{Grid, CarID, Command, Event, Person, PersonID, Scheduler, TripPhaseType, WalkingSimState};
-use geom::{Duration, Time, Distance, Bounds};
+use geom::{Duration, Time, Distance, Bounds, Pt2D};
 use map_model::{Map, BuildingID, BusStopID};
 use rand::Rng;
 use rand_xorshift::XorShiftRng;
@@ -16,6 +16,7 @@ pub struct PandemicModel {
     pop: BTreeMap<PersonID, State>,
     concentration: Grid,
     spacing: Distance,
+    delta_t: Duration,
 
     bldgs: SharedSpace<BuildingID>,
     bus_stops: SharedSpace<BusStopID>,
@@ -44,7 +45,7 @@ pub enum Cmd {
 // from there.
 
 impl PandemicModel {
-    pub fn new(bounds: &Bounds, spacing: Distance, rng: XorShiftRng) -> PandemicModel {
+    pub fn new(bounds: &Bounds, spacing: Distance, delta_t: Duration, rng: XorShiftRng) -> PandemicModel {
         let delta = spacing.inner_meters();
         let nx = (bounds.width() * delta).ceil() as usize;
         let ny = (bounds.height() * delta).ceil() as usize;
@@ -53,6 +54,7 @@ impl PandemicModel {
             pop: BTreeMap::new(),
             concentration: Grid::zero(nx, ny),
             spacing: spacing,
+            delta_t: delta_t,
 
             bldgs: SharedSpace::new(),
             bus_stops: SharedSpace::new(),
@@ -96,7 +98,7 @@ impl PandemicModel {
             };
             self.pop.insert(p.id, state);
         }
-        scheduler.push(Time::START_OF_DAY + Duration::seconds(1.0), Command::Pandemic(Cmd::Poll));
+        scheduler.push(Time::START_OF_DAY + self.delta_t, Command::Pandemic(Cmd::Poll));
     }
 
     pub fn count_sane(&self) -> usize {
@@ -234,8 +236,22 @@ impl PandemicModel {
             // This is handled by the rest of the simulation
             Cmd::CancelFutureTrips(_) => unreachable!(),
             Cmd::Poll => {
-                self.concentration.diffuse(1.0, 1.0, self.spacing.inner_meters());
-                scheduler.push(now + Duration::seconds(1.0), Command::Pandemic(Cmd::Poll));
+                let infectious_ped = walkers.get_unzoomed_agents(now, map).into_iter().filter_map(|x| {
+                    // normally it is a person (already filtered by walkers)
+                    if self.is_infectious(x.person.unwrap()) {
+                        Some(x.pos)
+                    } else {
+                        None
+                    }
+                    }).collect::<Vec<Pt2D>>();
+
+                self.concentration.add_sources(&infectious_ped, map.get_bounds(), self.spacing.inner_meters(), 1.0, self.delta_t.inner_seconds());
+                self.concentration.diffuse(1.0, self.delta_t.inner_seconds(), self.spacing.inner_meters());
+                self.concentration.crop(1.0e-3, 1.0);
+                if now.inner_seconds() as usize % 600 == 0 {
+                    self.concentration.draw(0.0, 1.0, &format!("test_{}.png", now.inner_seconds() as usize));
+                }
+                scheduler.push(now + self.delta_t, Command::Pandemic(Cmd::Poll));
             }
         }
     }
