@@ -338,5 +338,22 @@ impl State {
             )),
         }
     }
+
+    // TODO: not sure if we want an option here... I guess here we want because we could have
+    pub fn start_now(
+        self,
+        now: AnyTime,
+        rng: &mut XorShiftRng,
+    ) -> Result<Self, String> {
+        // rewrite this part with it
+        match self {
+            Self::Sane((ev, _)) => {
+                Ok(ev.next(now, rng))
+            }
+            _ => Err(String::from(
+                "Error: impossible to start from a non-sane situation.",
+            )),
+        }
+    }
 }
 

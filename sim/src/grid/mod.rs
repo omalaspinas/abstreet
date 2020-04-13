@@ -45,11 +45,11 @@ impl Grid {
     // d / dt phi (x, y, t) = kappa * (d² / dx² + d² / dy²) phi (x, y, t)
     // or phi(x, y, t + dt) = phi(x, y, t) +
     //     dt * kappa / dx² * ( phi(x+dx, t) + phi(x - dx, y, t) + phi(x, y + dy t) + phi(x, y - dy, t) - 4 * phi(x, y, t))
-    pub fn diffuse(&mut self, kappa: f64, dx: f64, dt: f64) {
+    pub fn diffuse(&mut self, kappa: f64, decay: f64, dx: f64, dt: f64) {
         let cpy = self.clone();
         for x in 1..self.width - 1 {
             for y in 1..self.height - 1 {
-                self[(x, y)] *= 1.0 - 4.0 * dt / (dx * dx) * kappa;
+                self[(x, y)] *= 1.0 - 4.0 * dt / (dx * dx) * kappa - dt * decay;
                 self[(x, y)] += dt / (dx * dx) * kappa
                     * (cpy[(x + 1, y)] + cpy[(x - 1, y)] + cpy[(x, y + 1)] + cpy[(x, y - 1)]);
             }
@@ -76,7 +76,7 @@ impl Grid {
             let x = ((w.x() - bounds.min_x) / dx).floor() as usize;
             let y = ((w.y() - bounds.min_y) / dx).floor() as usize;
 
-            println!("x = {}, y = {}, w.x() = {}, w.y() = {}", x, y, w.x(), w.y());
+            // println!("x = {}, y = {}, w.x() = {}, w.y() = {}", x, y, w.x(), w.y());
 
 
             self[(x, y)] += dt * mag_per_sec;

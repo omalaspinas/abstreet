@@ -213,6 +213,42 @@ impl PandemicModel {
         }
     }
 
+    fn pedestrian_transmission(
+        &mut self,
+        now: Time,
+        sane_walkers: &Vec<(PersonID, Pt2D)>,
+        bounds: &Bounds,
+        dx: f64,
+        _scheduler: &mut Scheduler,
+    ) {
+        for (p, w) in sane_walkers {
+            let x = ((w.x() - bounds.min_x) / dx).floor() as usize;
+            let y = ((w.y() - bounds.min_y) / dx).floor() as usize;
+
+            // TODO must think about how to make the transition more realistic
+            // probably an erf function?
+            if self.rng.gen_bool(self.concentration[(x, y)] / 100.0) {
+                // When poeple become expose
+                let state = self.pop.remove(&p).unwrap();
+                assert_eq!(
+                    state.get_event_time().unwrap().inner_seconds(),
+                    std::f64::INFINITY
+                );
+                let state = state
+                    .start_now(AnyTime::from(now), &mut self.rng)
+                    .unwrap();
+                self.pop.insert(*p, state);
+        
+                // if self.rng.gen_bool(0.1) {
+                //     scheduler.push(
+                //         now + self.rand_duration(Duration::hours(1), Duration::hours(3)),
+                //         Command::Pandemic(Cmd::BecomeHospitalized(person)),
+                //     );
+                // }
+            }
+        }
+    }
+
     pub fn handle_cmd(
         &mut self,
         now: Time,
@@ -245,13 +281,30 @@ impl PandemicModel {
                     }
                     }).collect::<Vec<Pt2D>>();
 
+                let sane_ped = walkers.get_unzoomed_agents(now, map).into_iter().filter_map(|x| {
+                    // normally it is a person (already filtered by walkers)
+                    if self.is_sane(x.person.unwrap()) {
+                        Some((x.person.unwrap(), x.pos))
+                    } else {
+                        None
+                    }
+                    }).collect::<Vec<(PersonID, Pt2D)>>();
+
                 self.concentration.add_sources(&infectious_ped, map.get_bounds(), self.spacing.inner_meters(), self.delta_t.inner_seconds(), 1.0);
-                self.concentration.diffuse(0.25, self.spacing.inner_meters(), self.delta_t.inner_seconds());
-                // self.concentration.absorb(0.01);
+                self.concentration.diffuse(0.025, 0.025, self.spacing.inner_meters(), self.delta_t.inner_seconds());
+                self.concentration.absorb(0.01);
                 if now.inner_seconds() as usize % 3600 == 0 {
                     // println!("{:?}", self.concentration);
                     self.concentration.draw_autoscale(&format!("test_{}.png", now.inner_seconds() as usize));
                 }
+
+                self.pedestrian_transmission(
+                    now,
+                    &sane_ped,
+                    map.get_bounds(),
+                    self.spacing.inner_meters(),
+                    scheduler);
+
                 scheduler.push(now + self.delta_t, Command::Pandemic(Cmd::Poll));
             }
         }
