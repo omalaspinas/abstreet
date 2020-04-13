@@ -1,7 +1,7 @@
 use crate::pandemic::{AnyTime, State};
-use crate::{WalkingSimState, CarID, Command,Event, Person, PersonID, Scheduler, TripPhaseType};
-use geom::{Duration, Time};
-use map_model::{BuildingID, BusStopID};
+use crate::{Grid, CarID, Command, Event, Person, PersonID, Scheduler, TripPhaseType, WalkingSimState};
+use geom::{Duration, Time, Distance, Bounds};
+use map_model::{Map, BuildingID, BusStopID};
 use rand::Rng;
 use rand_xorshift::XorShiftRng;
 use serde_derive::{Deserialize, Serialize};
@@ -14,6 +14,8 @@ use std::collections::BTreeMap;
 #[derive(Clone)]
 pub struct PandemicModel {
     pop: BTreeMap<PersonID, State>,
+    concentration: Grid,
+    spacing: Distance,
 
     bldgs: SharedSpace<BuildingID>,
     bus_stops: SharedSpace<BusStopID>,
@@ -42,9 +44,15 @@ pub enum Cmd {
 // from there.
 
 impl PandemicModel {
-    pub fn new(rng: XorShiftRng) -> PandemicModel {
+    pub fn new(bounds: &Bounds, spacing: Distance, rng: XorShiftRng) -> PandemicModel {
+        let delta = spacing.inner_meters();
+        let nx = (bounds.width() * delta).ceil() as usize;
+        let ny = (bounds.height() * delta).ceil() as usize;
+
         PandemicModel {
             pop: BTreeMap::new(),
+            concentration: Grid::zero(nx, ny),
+            spacing: spacing,
 
             bldgs: SharedSpace::new(),
             bus_stops: SharedSpace::new(),
@@ -58,7 +66,7 @@ impl PandemicModel {
 
     // Sorry, initialization order of simulations is still a bit messy. This'll be called at
     // Time::START_OF_DAY after all of the people have been created from a Scenario.
-    pub fn initialize(&mut self, population: &Vec<Person>, _scheduler: &mut Scheduler) {
+    pub fn initialize(&mut self, population: &Vec<Person>, scheduler: &mut Scheduler) {
         assert!(!self.initialized);
         self.initialized = true;
 
@@ -88,6 +96,7 @@ impl PandemicModel {
             };
             self.pop.insert(p.id, state);
         }
+        scheduler.push(Time::START_OF_DAY + Duration::seconds(1.0), Command::Pandemic(Cmd::Poll));
     }
 
     pub fn count_sane(&self) -> usize {
@@ -202,7 +211,14 @@ impl PandemicModel {
         }
     }
 
-    pub fn handle_cmd(&mut self, now: Time, cmd: Cmd, walkers: &WalkingSimState, scheduler: &mut Scheduler) {
+    pub fn handle_cmd(
+        &mut self,
+        now: Time,
+        cmd: Cmd,
+        walkers: &WalkingSimState,
+        map: &Map,
+        scheduler: &mut Scheduler,
+    ) {
         assert!(self.initialized);
 
         // TODO Here we might enforce policies. Like severe -> become hospitalized
@@ -218,10 +234,8 @@ impl PandemicModel {
             // This is handled by the rest of the simulation
             Cmd::CancelFutureTrips(_) => unreachable!(),
             Cmd::Poll => {
-                scheduler.push(
-                    now + Duration::seconds(1.0),
-                    Command::Pandemic(Cmd::Poll),
-                );
+                self.concentration.diffuse(1.0, 1.0, self.spacing.inner_meters());
+                scheduler.push(now + Duration::seconds(1.0), Command::Pandemic(Cmd::Poll));
             }
         }
     }

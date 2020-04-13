@@ -22,6 +22,7 @@ pub(crate) use self::mechanics::{
     DrivingSimState, IntersectionSimState, ParkingSimState, WalkingSimState,
 };
 pub(crate) use self::pandemic::PandemicModel;
+pub(crate) use self::grid::Grid;
 pub(crate) use self::router::{ActionAtEnd, Router};
 pub(crate) use self::scheduler::{Command, Scheduler};
 pub use self::sim::{AgentProperties, Sim, SimOptions};
