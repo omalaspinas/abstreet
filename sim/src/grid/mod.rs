@@ -37,27 +37,29 @@ impl Grid {
         }
     }
 
+    fn min_max(&self) -> (f64, f64) {
+        self.data.iter().cloned().fold((std::f64::MAX, -std::f64::MAX), |(min, max), x| (f64::min(min, x), f64::max(max, x)))
+    }
+
     // The 2D diffusion equation is given by
     // d / dt phi (x, y, t) = kappa * (d² / dx² + d² / dy²) phi (x, y, t)
     // or phi(x, y, t + dt) = phi(x, y, t) +
     //     dt * kappa / dx² * ( phi(x+dx, t) + phi(x - dx, y, t) + phi(x, y + dy t) + phi(x, y - dy, t) - 4 * phi(x, y, t))
     pub fn diffuse(&mut self, kappa: f64, dt: f64, dx: f64) {
-        let mut cpy = self.clone();
+        let cpy = self.clone();
         for x in 1..self.width - 1 {
             for y in 1..self.height - 1 {
-                self[(x, y)] *= 1.0 - 4.0 * dt / (dx * dx);
-                self[(x, y)] += dt / (dx * dx)
+                self[(x, y)] *= 1.0 - 4.0 * dt / (dx * dx) * kappa;
+                self[(x, y)] += dt / (dx * dx) * kappa
                     * (cpy[(x + 1, y)] + cpy[(x - 1, y)] + cpy[(x, y + 1)] + cpy[(x, y - 1)]);
             }
         }
     }
 
-    pub fn crop(&mut self, min: f64, max: f64) {
+    pub fn absorb(&mut self, min: f64) {
         self.data.iter_mut().for_each(|x| {
-            if *x > max {
-                *x = max
-            } else if *x < min {
-                *x = min
+            if *x < min {
+                *x = 0.0
             }
         });
     }
@@ -75,6 +77,10 @@ impl Grid {
             let y = ((w.y() - bounds.min_x) * dx) as usize;
 
             self[(x, y)] += dt * mag_per_sec;
+            self[(x+1, y)] += dt * mag_per_sec;
+            self[(x-1, y)] += dt * mag_per_sec;
+            self[(x, y+1)] += dt * mag_per_sec;
+            self[(x, y-1)] += dt * mag_per_sec;
         }
     }
 
@@ -85,31 +91,50 @@ impl Grid {
         root.fill(&WHITE).unwrap();
 
         let mut chart = ChartBuilder::on(&root)
-            .margin(20)
-            .x_label_area_size(10)
-            .y_label_area_size(10)
-            .build_ranged(0.0..self.width as f64, 0.0..self.height as f64).unwrap();
+            .caption("Matshow Example", ("sans-serif", 80))
+            .margin(5)
+            .top_x_label_area_size(40)
+            .y_label_area_size(40)
+            .build_ranged(0i32..self.width as i32, 15i32..self.height as i32).unwrap();
 
         chart
             .configure_mesh()
+            .x_labels(15)
+            .y_labels(15)
+            .x_label_offset(35)
+            .y_label_offset(25)
             .disable_x_mesh()
             .disable_y_mesh()
+            .label_style(("sans-serif", 20))
             .draw().unwrap();
 
         let plotting_area = chart.plotting_area();
 
-        // let range = plotting_area.get_pixel_range();
-
         for x in 0..self.width {
             for y in 0..self.height {
-                let mut c = self[(x, y)];
-                if c > 0.0 {
-                    c = 1.0;
-                    println!("{}", c);
+                let c = self[(x, y)];
+                if max - min == 0.0 {
+                    // plotting_area.draw(Rectangle::new(
+                    //     [(x, y), (x + 1, y + 1)],
+                    //     HSLColor(
+                    //         240.0 / 360.0 - 240.0 / 360.0 * (*v as f64 / 20.0),
+                    //         0.7,
+                    //         0.1 + 0.4 * *v as f64 / 20.0,
+                    //     )
+                    //     .filled()).unwrap());
+                    plotting_area.draw_pixel((x as i32, y as i32), &WHITE).unwrap();
+                } else {
+                    // println!("{}, {}, {}", min, max, c);
+                    plotting_area.draw_pixel((x as i32, y as i32), &HSLColor((c - min) / (max - min), 1.0, 0.5)).unwrap();
                 }
-                plotting_area.draw_pixel((x as f64, y as f64), &HSLColor((c - min) / max, 1.0, 0.5)).unwrap();
             }
         }
+    }
+
+    pub fn draw_autoscale(&self, fname: &str) {
+        let (min, max) = self.min_max();
+        println!("min = {}, max = {}", min, max);
+        self.draw(min, max, fname);
     }
 }
 

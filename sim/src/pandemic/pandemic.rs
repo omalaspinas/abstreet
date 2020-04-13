@@ -98,7 +98,7 @@ impl PandemicModel {
             };
             self.pop.insert(p.id, state);
         }
-        scheduler.push(Time::START_OF_DAY + self.delta_t, Command::Pandemic(Cmd::Poll));
+        scheduler.push(Time::START_OF_DAY + Duration::hours(7), Command::Pandemic(Cmd::Poll));
     }
 
     pub fn count_sane(&self) -> usize {
@@ -246,10 +246,11 @@ impl PandemicModel {
                     }).collect::<Vec<Pt2D>>();
 
                 self.concentration.add_sources(&infectious_ped, map.get_bounds(), self.spacing.inner_meters(), 1.0, self.delta_t.inner_seconds());
-                self.concentration.diffuse(1.0, self.delta_t.inner_seconds(), self.spacing.inner_meters());
-                self.concentration.crop(1.0e-3, 1.0);
-                if now.inner_seconds() as usize % 600 == 0 {
-                    self.concentration.draw(0.0, 1.0, &format!("test_{}.png", now.inner_seconds() as usize));
+                self.concentration.diffuse(0.25, self.delta_t.inner_seconds(), self.spacing.inner_meters());
+                // self.concentration.absorb(0.01);
+                if now.inner_seconds() as usize % 3600 == 0 {
+                    // println!("{:?}", self.concentration);
+                    self.concentration.draw_autoscale(&format!("test_{}.png", now.inner_seconds() as usize));
                 }
                 scheduler.push(now + self.delta_t, Command::Pandemic(Cmd::Poll));
             }

@@ -160,12 +160,12 @@ pub enum State {
 }
 
 impl State {
-    const T_INF: f64 = 360.0 * 10.0; // TODO dummy values
+    const T_INF: f64 = 3600.0 * 10.0; // TODO dummy values
     const T_INC: f64 = 3600.0; // TODO dummy values
     const R_0: f64 = 2.5;
     // const S_RATIO: f64 = 0.985;
-    const E_RATIO: f64 = 0.01;
-    const I_RATIO: f64 = 0.05;
+    const E_RATIO: f64 = 0.2;
+    const I_RATIO: f64 = 0.5;
     // const R_RATIO: f64 = 0.0;
 
     pub fn ini_infectious_ratio() -> f64 {
