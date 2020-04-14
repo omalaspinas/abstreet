@@ -1,7 +1,9 @@
 use crate::pandemic::{AnyTime, State};
-use crate::{Grid, CarID, Command, Event, Person, PersonID, Scheduler, TripPhaseType, WalkingSimState};
-use geom::{Duration, Time, Distance, Bounds, Pt2D};
-use map_model::{Map, BuildingID, BusStopID};
+use crate::{
+    CarID, Command, Event, Grid, Person, PersonID, Scheduler, TripPhaseType, WalkingSimState,
+};
+use geom::{Bounds, Distance, Duration, Pt2D, Time};
+use map_model::{BuildingID, BusStopID, Map};
 use rand::Rng;
 use rand_xorshift::XorShiftRng;
 use serde_derive::{Deserialize, Serialize};
@@ -28,12 +30,25 @@ pub struct PandemicModel {
 }
 
 // You can schedule callbacks in the future by doing scheduler.push(future time, one of these)
+// TODO Transition/Transmission may be abit rough see if we change that in the future
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub enum Cmd {
     Poll,
     BecomeHospitalized(PersonID),
     BecomeQuarantined(PersonID),
     CancelFutureTrips(PersonID),
+    Transition(PersonID),
+    Transmission(PersonID),
+}
+
+impl From<(State, PersonID)> for Cmd {
+    fn from(s: (State, PersonID)) -> Cmd {
+        match s {
+            (State::Sane(_), p) => Cmd::Transmission(p),
+            (State::Exposed(_), p) | (State::Infectious(_), p) | (State::Hospitalized(_), p) => Cmd::Transition(p),
+            (State::Dead(_), _) | (State::Recovered(_), _) => unreachable!(),
+        }
+    }
 }
 
 // TODO Pretend handle_event and handle_cmd also take in some object that lets you do things like:
@@ -45,7 +60,12 @@ pub enum Cmd {
 // from there.
 
 impl PandemicModel {
-    pub fn new(bounds: &Bounds, spacing: Distance, delta_t: Duration, rng: XorShiftRng) -> PandemicModel {
+    pub fn new(
+        bounds: &Bounds,
+        spacing: Distance,
+        delta_t: Duration,
+        rng: XorShiftRng,
+    ) -> PandemicModel {
         let dx = spacing.inner_meters();
         let nx = (bounds.width() / dx).ceil() as usize;
         let ny = (bounds.height() / dx).ceil() as usize;
@@ -86,11 +106,24 @@ impl PandemicModel {
                     )
                     .unwrap();
                 let next_state = if self.rng.gen_bool(State::ini_infectious_ratio()) {
-                    next_state
+                    match next_state
+                        .0
                         .next_default(AnyTime::from(Time::START_OF_DAY), &mut self.rng)
-                        .unwrap()
+                    {
+                        (s, Some(t)) => {
+                            scheduler.push(t, Command::Pandemic(Cmd::from((s.clone(), p.id))));
+                            s
+                        }
+                        (s, None) => s,
+                    }
                 } else {
-                    next_state
+                    match next_state {
+                        (s, Some(t)) => {
+                            scheduler.push(t, Command::Pandemic(Cmd::from((s.clone(), p.id))));
+                            s
+                        }
+                        (s, None) => s,
+                    }
                 };
                 next_state
             } else {
@@ -98,7 +131,11 @@ impl PandemicModel {
             };
             self.pop.insert(p.id, state);
         }
-        scheduler.push(Time::START_OF_DAY + Duration::hours(7), Command::Pandemic(Cmd::Poll));
+        // TODO: no peoplewalk during the night (it's just a hack to see things happen faster).
+        scheduler.push(
+            Time::START_OF_DAY + Duration::hours(7),
+            Command::Pandemic(Cmd::Poll),
+        );
     }
 
     pub fn count_sane(&self) -> usize {
@@ -205,7 +242,6 @@ impl PandemicModel {
                         }
                     }
                     _ => {
-                        self.transition(now, person, scheduler);
                     }
                 }
             }
@@ -219,7 +255,7 @@ impl PandemicModel {
         sane_walkers: &Vec<(PersonID, Pt2D)>,
         bounds: &Bounds,
         dx: f64,
-        _scheduler: &mut Scheduler,
+        scheduler: &mut Scheduler,
     ) {
         for (p, w) in sane_walkers {
             let x = ((w.x() - bounds.min_x) / dx).floor() as usize;
@@ -234,11 +270,16 @@ impl PandemicModel {
                     state.get_event_time().unwrap().inner_seconds(),
                     std::f64::INFINITY
                 );
-                let state = state
-                    .start_now(AnyTime::from(now), &mut self.rng)
-                    .unwrap();
+                // The probability of transmission is handled in the if above
+                let state = state.start_now(AnyTime::from(now), &mut self.rng).unwrap();
+                let state = match state {
+                    (s, Some(t)) => {
+                        scheduler.push(t, Command::Pandemic(Cmd::from((s.clone(), *p))));
+                        s
+                    }
+                    (s, None) => s,
+                };
                 self.pop.insert(*p, state);
-        
                 // if self.rng.gen_bool(0.1) {
                 //     scheduler.push(
                 //         now + self.rand_duration(Duration::hours(1), Duration::hours(3)),
@@ -272,30 +313,50 @@ impl PandemicModel {
             // This is handled by the rest of the simulation
             Cmd::CancelFutureTrips(_) => unreachable!(),
             Cmd::Poll => {
-                let infectious_ped = walkers.get_unzoomed_agents(now, map).into_iter().filter_map(|x| {
-                    // normally it is a person (already filtered by walkers)
-                    if self.is_infectious(x.person.unwrap()) {
-                        Some(x.pos)
-                    } else {
-                        None
-                    }
-                    }).collect::<Vec<Pt2D>>();
+                let infectious_ped = walkers
+                    .get_unzoomed_agents(now, map)
+                    .into_iter()
+                    .filter_map(|x| {
+                        // normally it is a person (already filtered by walkers)
+                        if self.is_infectious(x.person.unwrap()) {
+                            Some(x.pos)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<Pt2D>>();
 
-                let sane_ped = walkers.get_unzoomed_agents(now, map).into_iter().filter_map(|x| {
-                    // normally it is a person (already filtered by walkers)
-                    if self.is_sane(x.person.unwrap()) {
-                        Some((x.person.unwrap(), x.pos))
-                    } else {
-                        None
-                    }
-                    }).collect::<Vec<(PersonID, Pt2D)>>();
+                let sane_ped = walkers
+                    .get_unzoomed_agents(now, map)
+                    .into_iter()
+                    .filter_map(|x| {
+                        // normally it is a person (already filtered by walkers)
+                        if self.is_sane(x.person.unwrap()) {
+                            Some((x.person.unwrap(), x.pos))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<(PersonID, Pt2D)>>();
 
-                self.concentration.add_sources(&infectious_ped, map.get_bounds(), self.spacing.inner_meters(), self.delta_t.inner_seconds(), 1.0);
-                self.concentration.diffuse(0.025, 0.025, self.spacing.inner_meters(), self.delta_t.inner_seconds());
+                self.concentration.add_sources(
+                    &infectious_ped,
+                    map.get_bounds(),
+                    self.spacing.inner_meters(),
+                    self.delta_t.inner_seconds(),
+                    1.0,
+                );
+                self.concentration.diffuse(
+                    0.025,
+                    0.025,
+                    self.spacing.inner_meters(),
+                    self.delta_t.inner_seconds(),
+                );
                 self.concentration.absorb(0.01);
                 if now.inner_seconds() as usize % 3600 == 0 {
                     // println!("{:?}", self.concentration);
-                    self.concentration.draw_autoscale(&format!("test_{}.png", now.inner_seconds() as usize));
+                    self.concentration
+                        .draw_autoscale(&format!("test_{}.png", now.inner_seconds() as usize));
                 }
 
                 self.pedestrian_transmission(
@@ -303,9 +364,17 @@ impl PandemicModel {
                     &sane_ped,
                     map.get_bounds(),
                     self.spacing.inner_meters(),
-                    scheduler);
+                    scheduler,
+                );
 
                 scheduler.push(now + self.delta_t, Command::Pandemic(Cmd::Poll));
+            },
+            Cmd::Transition(person) => {
+                self.transition(now, person, scheduler);
+            },
+            Cmd::Transmission(_) => {
+                // TODO don't know if something can happen here.
+                unreachable!()
             }
         }
     }
@@ -378,9 +447,16 @@ impl PandemicModel {
     }
 
     // transition from a state to another without interaction with others
-    fn transition(&mut self, now: Time, person: PersonID, _scheduler: &mut Scheduler) {
+    fn transition(&mut self, now: Time, person: PersonID, scheduler: &mut Scheduler) {
         let state = self.pop.remove(&person).unwrap();
-        let state = state.next(AnyTime::from(now), &mut self.rng).unwrap();
+        let state = state.next(AnyTime::from(now), &mut self.rng);
+        let state = match state {
+            (s, Some(t)) => {
+                scheduler.push(t, Command::Pandemic(Cmd::from((s.clone(), person))));
+                s
+            }
+            (s, None) => s,
+        };
         self.pop.insert(person, state);
 
         // if self.rng.gen_bool(0.1) {
@@ -396,7 +472,7 @@ impl PandemicModel {
         now: Time,
         overlap: Duration,
         person: PersonID,
-        _scheduler: &mut Scheduler,
+        scheduler: &mut Scheduler,
     ) {
         // When poeple become expose
         let state = self.pop.remove(&person).unwrap();
@@ -407,13 +483,17 @@ impl PandemicModel {
         let state = state
             .start(AnyTime::from(now), overlap, &mut self.rng)
             .unwrap();
+        let state = match state {
+            (s, Some(t)) => {
+                scheduler.push(t, Command::Pandemic(Cmd::from((s.clone(), person))));
+                s
+            }
+            (s, None) => s,
+        };
         self.pop.insert(person, state);
 
         // if self.rng.gen_bool(0.1) {
-        //     scheduler.push(
-        //         now + self.rand_duration(Duration::hours(1), Duration::hours(3)),
-        //         Command::Pandemic(Cmd::BecomeHospitalized(person)),
-        //     );
+        //
         // }
     }
 }
