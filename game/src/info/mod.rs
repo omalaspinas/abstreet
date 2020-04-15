@@ -19,11 +19,11 @@ use ezgui::{
 };
 use geom::{Circle, Distance, Duration, Time};
 use map_model::{AreaID, BuildingID, BusStopID, IntersectionID, LaneID};
-use maplit::btreeset;
+use maplit::btreemap;
 use sim::{
     AgentID, Analytics, CarID, PedestrianID, PersonID, PersonState, TripID, TripMode, VehicleType,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 pub struct InfoPanel {
     tab: Tab,
@@ -44,7 +44,9 @@ pub struct InfoPanel {
 
 #[derive(Clone, PartialEq)]
 pub enum Tab {
-    PersonTrips(PersonID, BTreeSet<TripID>),
+    // What trips are open? For finished trips, show the timeline in the current simulation if
+    // true, prebaked if false.
+    PersonTrips(PersonID, BTreeMap<TripID, bool>),
     PersonBio(PersonID),
 
     BusStatus(CarID),
@@ -83,7 +85,7 @@ impl Tab {
                 if let Some(p) = app.primary.sim.agent_to_person(AgentID::Car(c)) {
                     Tab::PersonTrips(
                         p,
-                        btreeset! {app.primary.sim.agent_to_trip(AgentID::Car(c)).unwrap()},
+                        btreemap! {app.primary.sim.agent_to_trip(AgentID::Car(c)).unwrap() => true},
                     )
                 } else if c.1 == VehicleType::Bus {
                     Tab::BusStatus(c)
@@ -96,7 +98,7 @@ impl Tab {
                     .sim
                     .agent_to_person(AgentID::Pedestrian(p))
                     .unwrap(),
-                btreeset! {app.primary.sim.agent_to_trip(AgentID::Pedestrian(p)).unwrap()},
+                btreemap! {app.primary.sim.agent_to_trip(AgentID::Pedestrian(p)).unwrap() => true},
             ),
             ID::PedCrowd(members) => Tab::Crowd(members),
             ID::ExtraShape(es) => Tab::ExtraShape(es),
@@ -339,6 +341,7 @@ impl InfoPanel {
         match self.composite.event(ctx) {
             Some(Outcome::Clicked(action)) => {
                 if let Some(new_tab) = self.hyperlinks.get(&action).cloned() {
+                    // TODO restore if the tab was the same?
                     *self = InfoPanel::new(ctx, app, new_tab, ctx_actions);
                     return (false, None);
                 } else if action == "close info" {
@@ -395,7 +398,7 @@ impl InfoPanel {
                                 sandbox.controls.common.as_mut().unwrap().launch_info_panel(
                                     ctx,
                                     app,
-                                    Tab::PersonTrips(person, btreeset! { trip }),
+                                    Tab::PersonTrips(person, btreemap! { trip => true }),
                                     &mut actions,
                                 );
 
@@ -414,7 +417,9 @@ impl InfoPanel {
                 // Maybe a non-click action should change the tab. Aka, checkboxes/dropdowns/etc on
                 // a tab.
                 if let Some(new_tab) = self.tab.changed_settings(&self.composite) {
-                    *self = InfoPanel::new(ctx, app, new_tab, ctx_actions);
+                    let mut new = InfoPanel::new(ctx, app, new_tab, ctx_actions);
+                    new.composite.restore(ctx, &self.composite);
+                    *self = new;
                 }
 
                 (false, None)
@@ -468,7 +473,7 @@ fn throughput<F: Fn(&Analytics, Time) -> BTreeMap<TripMode, Vec<(Time, usize)>>>
     ctx: &EventCtx,
     app: &App,
     get_data: F,
-    show_baseline: bool,
+    show_before: bool,
 ) -> Widget {
     let mut series = get_data(app.primary.sim.get_analytics(), app.primary.sim.time())
         .into_iter()
@@ -478,11 +483,11 @@ fn throughput<F: Fn(&Analytics, Time) -> BTreeMap<TripMode, Vec<(Time, usize)>>>
             pts,
         })
         .collect::<Vec<_>>();
-    if show_baseline {
+    if show_before {
         // TODO Ahh these colors don't show up differently at all.
         for (m, pts) in get_data(app.prebaked(), Time::END_OF_DAY) {
             series.push(Series {
-                label: format!("{} (baseline)", m.ongoing_verb()),
+                label: format!("{} (before changes)", m.ongoing_verb()),
                 color: color_for_mode(m, app).alpha(0.3),
                 pts,
             });
@@ -549,14 +554,14 @@ pub trait ContextualActions {
 
 #[derive(Clone, PartialEq)]
 pub struct DataOptions {
-    pub show_baseline: bool,
+    pub show_before: bool,
     pub bucket_size: Duration,
 }
 
 impl DataOptions {
     pub fn new(app: &App) -> DataOptions {
         DataOptions {
-            show_baseline: app.has_prebaked().is_some(),
+            show_before: app.has_prebaked().is_some(),
             bucket_size: Duration::minutes(20),
         }
     }
@@ -579,8 +584,7 @@ impl DataOptions {
                 "buckets".draw_text(ctx),
             ]),
             if app.has_prebaked().is_some() {
-                // TODO Change the wording of this
-                Checkbox::text(ctx, "Show baseline data", None, self.show_baseline)
+                Checkbox::text(ctx, "Show before changes", None, self.show_before)
             } else {
                 Widget::nothing()
             },
@@ -589,7 +593,7 @@ impl DataOptions {
 
     pub fn from_controls(c: &Composite) -> DataOptions {
         DataOptions {
-            show_baseline: c.has_widget("Show baseline data") && c.is_checked("Show baseline data"),
+            show_before: c.has_widget("Show before changes") && c.is_checked("Show before changes"),
             bucket_size: c.dropdown_value("bucket size"),
         }
     }
