@@ -106,6 +106,12 @@ impl Widget {
         self
     }
 
+    // Things like padding don't work on many widgets, so just make a convenient way to wrap in a
+    // row/column first
+    pub fn container(self) -> Widget {
+        Widget::row(vec![self])
+    }
+
     // TODO Alright, this seems to not work on JustDraw's (or at least SVGs).
     pub fn padding(mut self, pixels: usize) -> Widget {
         self.layout.style.padding = Rect {
@@ -219,8 +225,8 @@ impl Widget {
     pub fn draw_batch(ctx: &EventCtx, batch: GeomBatch) -> Widget {
         JustDraw::wrap(ctx, batch)
     }
-    pub fn draw_svg(ctx: &EventCtx, filename: &str) -> Widget {
-        JustDraw::svg(ctx, filename)
+    pub fn draw_svg<I: Into<String>>(ctx: &EventCtx, filename: I) -> Widget {
+        JustDraw::svg(ctx, filename.into())
     }
     pub fn draw_svg_transform(ctx: &EventCtx, filename: &str, rewrite: RewriteColor) -> Widget {
         JustDraw::svg_transform(ctx, filename, rewrite)
@@ -394,14 +400,9 @@ impl Widget {
                 w.restore(ctx, prev);
             }
         } else if self.widget.can_restore() {
-            self.widget.restore(
-                ctx,
-                &prev
-                    .top_level
-                    .find(self.id.as_ref().unwrap())
-                    .unwrap()
-                    .widget,
-            );
+            if let Some(ref other) = prev.top_level.find(self.id.as_ref().unwrap()) {
+                self.widget.restore(ctx, &other.widget);
+            }
         }
     }
 
