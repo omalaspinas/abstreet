@@ -96,7 +96,7 @@ impl PandemicModel {
         // TODO the intial time is not well set. it should start "before"
         // the beginning of the day. Also
         for p in population {
-            let state = State::new(0.5, 0.5);
+            let state = State::new(0.95, 0.05);
             let state = if self.rng.gen_bool(State::ini_exposed_ratio()) {
                 let next_state = state
                     .start(
@@ -132,10 +132,10 @@ impl PandemicModel {
             self.pop.insert(p.id, state);
         }
         // TODO: no peoplewalk during the night (it's just a hack to see things happen faster).
-        scheduler.push(
-            Time::START_OF_DAY + Duration::hours(7),
-            Command::Pandemic(Cmd::Poll),
-        );
+        // scheduler.push(
+        //     Time::START_OF_DAY + Duration::hours(7),
+        //     Command::Pandemic(Cmd::Poll),
+        // );
     }
 
     pub fn count_sane(&self) -> usize {
@@ -339,13 +339,16 @@ impl PandemicModel {
                     })
                     .collect::<Vec<(PersonID, Pt2D)>>();
 
-                self.concentration.add_sources(
-                    &infectious_ped,
-                    map.get_bounds(),
-                    self.spacing.inner_meters(),
-                    self.delta_t.inner_seconds(),
-                    1.0,
-                );
+                if infectious_ped.len() > 0 {
+                    self.concentration.add_sources(
+                        &infectious_ped,
+                        map.get_bounds(),
+                        self.spacing.inner_meters(),
+                        self.delta_t.inner_seconds(),
+                        1.0,
+                    );
+                }
+
                 self.concentration.diffuse(
                     0.025,
                     0.025,
@@ -353,20 +356,21 @@ impl PandemicModel {
                     self.delta_t.inner_seconds(),
                 );
                 self.concentration.absorb(0.01);
-                if now.inner_seconds() as usize % 3600 == 0 {
-                    // println!("{:?}", self.concentration);
-                    self.concentration
-                        .draw_autoscale(&format!("test_{}.png", now.inner_seconds() as usize));
+                // if now.inner_seconds() as usize % 3600 == 0 {
+                //     // println!("{:?}", self.concentration);
+                //     self.concentration
+                //         .draw_autoscale(&format!("test_{}.png", now.inner_seconds() as usize));
+                // }
+
+                if sane_ped.len() > 0 {
+                    self.pedestrian_transmission(
+                        now,
+                        &sane_ped,
+                        map.get_bounds(),
+                        self.spacing.inner_meters(),
+                        scheduler,
+                    );
                 }
-
-                self.pedestrian_transmission(
-                    now,
-                    &sane_ped,
-                    map.get_bounds(),
-                    self.spacing.inner_meters(),
-                    scheduler,
-                );
-
                 scheduler.push(now + self.delta_t, Command::Pandemic(Cmd::Poll));
             },
             Cmd::Transition(person) => {
