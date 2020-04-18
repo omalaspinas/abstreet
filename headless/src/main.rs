@@ -39,7 +39,7 @@ fn run_experiment(map: &Map, sim: &mut Sim) {
         |sim, _map| {
             // This'll run every 30 sim seconds
             println!(
-                "At {}, {} sane, {} exposed, {} infected, {} recovered, {} dead",
+                "{} {} {} {} {} {}",
                 sim.time(),
                 prettyprint_usize(sim.get_pandemic_model().unwrap().count_sane()),
                 prettyprint_usize(sim.get_pandemic_model().unwrap().count_exposed()),
