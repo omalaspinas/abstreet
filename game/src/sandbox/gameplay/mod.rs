@@ -28,7 +28,7 @@ use map_model::{EditCmd, EditIntersection, Map, MapEdits};
 use rand_xorshift::XorShiftRng;
 use sim::{Analytics, PersonID, Scenario, ScenarioGenerator};
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Eq, Hash, Clone)]
 pub enum GameplayMode {
     // TODO Maybe this should be "sandbox"
     // Map path
@@ -140,7 +140,7 @@ impl GameplayMode {
         } else if name == "5 weekdays repeated" {
             let s: Scenario =
                 abstutil::read_binary(abstutil::path_scenario(map.get_name(), "weekday"), timer);
-            s.repeat_days(5)
+            s.repeat_days(5, true)
         } else {
             let path = abstutil::path_scenario(map.get_name(), &name);
             match abstutil::maybe_read_binary(path.clone(), timer) {
@@ -353,6 +353,7 @@ fn challenge_controller(
     )
 }
 
+// TODO Haha, I'm already ditching this. We'll see what evolves instead.
 struct FinalScore {
     composite: Composite,
     mode: GameplayMode,

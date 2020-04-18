@@ -1,10 +1,10 @@
 use crate::{
-    DrivingGoal, ParkingSpot, PersonID, SidewalkSpot, Sim, TripSpec, VehicleSpec, VehicleType,
-    BIKE_LENGTH, MAX_CAR_LENGTH, MIN_CAR_LENGTH,
+    DrivingGoal, ParkingSpot, PersonID, SidewalkPOI, SidewalkSpot, Sim, TripSpec, VehicleSpec,
+    VehicleType, BIKE_LENGTH, MAX_CAR_LENGTH, MIN_CAR_LENGTH,
 };
-use abstutil::Timer;
+use abstutil::{MultiMap, Timer};
 use geom::{Distance, Duration, Speed, Time};
-use map_model::{BuildingID, BusRouteID, BusStopID, Map, Position, RoadID};
+use map_model::{BuildingID, BusRouteID, BusStopID, IntersectionID, Map, Position, RoadID};
 use rand::seq::SliceRandom;
 use rand::Rng;
 use rand_xorshift::XorShiftRng;
@@ -18,7 +18,6 @@ pub struct Scenario {
     pub map_name: String,
 
     pub people: Vec<PersonSpec>,
-    pub parked_cars_per_bldg: BTreeMap<BuildingID, usize>,
     // None means seed all buses. Otherwise the route name must be present here.
     pub only_seed_buses: Option<BTreeSet<String>>,
 }
@@ -27,6 +26,9 @@ pub struct Scenario {
 pub struct PersonSpec {
     pub id: PersonID,
     pub trips: Vec<IndividTrip>,
+    // 3 possibilities: no car, car appears from outside the map, or car starts at a building
+    pub has_car: bool,
+    pub car_initially_parked_at: Option<BuildingID>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -72,30 +74,21 @@ impl Scenario {
 
         let mut spawner = sim.make_spawner();
 
-        let mut parked_cars_per_bldg: Vec<(BuildingID, usize)> = Vec::new();
-        let mut total_parked_cars = 0;
-        for (b, cnt) in &self.parked_cars_per_bldg {
-            if *cnt != 0 {
-                parked_cars_per_bldg.push((*b, *cnt));
-                total_parked_cars += *cnt;
+        let mut parked_cars: Vec<(BuildingID, PersonID)> = Vec::new();
+        for (b, owners) in self.parked_cars_per_bldg().consume() {
+            for p in owners {
+                parked_cars.push((b, p));
             }
         }
-        // parked_cars_per_bldg is stable over map edits, so don't fork.
-        parked_cars_per_bldg.shuffle(rng);
-        seed_parked_cars(
-            parked_cars_per_bldg,
-            total_parked_cars,
-            sim,
-            map,
-            rng,
-            timer,
-        );
+        // parked_cars is stable over map edits, so don't fork.
+        parked_cars.shuffle(rng);
+        seed_parked_cars(parked_cars, sim, map, rng, timer);
 
         timer.start_iter("trips for People", self.people.len());
         for p in &self.people {
             timer.next();
             // TODO Or spawner?
-            sim.new_person(p.id);
+            sim.new_person(p.id, p.has_car);
             for t in &p.trips {
                 // The RNG call is stable over edits.
                 let spec = t.trip.clone().to_trip_spec(rng);
@@ -119,7 +112,6 @@ impl Scenario {
             scenario_name: name.to_string(),
             map_name: map.get_name().to_string(),
             people: Vec::new(),
-            parked_cars_per_bldg: BTreeMap::new(),
             only_seed_buses: Some(BTreeSet::new()),
         }
     }
@@ -168,13 +160,26 @@ impl Scenario {
         )
     }
 
-    pub fn repeat_days(mut self, days: usize) -> Scenario {
+    // TODO Utter hack. Blindly repeats all trips taken by each person every day. If
+    // avoid_inbound_trips is true, then don't repeat driving trips that start outside the map and
+    // come in, because those often lead to parking spots leaking. This isn't realistic, but none
+    // of this is; even the original 1-day scenario doesn't yet guarantee continuity of people. A
+    // person might be in the middle of one trip, and they start the next one!
+    pub fn repeat_days(mut self, days: usize, avoid_inbound_trips: bool) -> Scenario {
         self.scenario_name = format!("{} repeated for {} days", self.scenario_name, days);
         for person in &mut self.people {
             let mut trips = Vec::new();
             let mut offset = Duration::ZERO;
-            for _ in 0..days {
+            for day in 0..days {
                 for trip in &person.trips {
+                    let inbound = match trip.trip {
+                        SpawnTrip::CarAppearing { is_bike, .. } => !is_bike,
+                        _ => false,
+                    };
+                    if day > 0 && inbound && avoid_inbound_trips {
+                        continue;
+                    }
+
                     trips.push(IndividTrip {
                         depart: trip.depart + offset,
                         trip: trip.trip.clone(),
@@ -186,11 +191,20 @@ impl Scenario {
         }
         self
     }
+
+    pub fn parked_cars_per_bldg(&self) -> MultiMap<BuildingID, PersonID> {
+        let mut per_bldg = MultiMap::new();
+        for p in &self.people {
+            if let Some(b) = p.car_initially_parked_at {
+                per_bldg.insert(b, p.id);
+            }
+        }
+        per_bldg
+    }
 }
 
 fn seed_parked_cars(
-    parked_cars_per_bldg: Vec<(BuildingID, usize)>,
-    total_parked_cars: usize,
+    parked_cars: Vec<(BuildingID, PersonID)>,
     sim: &mut Sim,
     map: &Map,
     base_rng: &mut XorShiftRng,
@@ -198,7 +212,7 @@ fn seed_parked_cars(
 ) {
     // We always need the same number of cars
     let mut rand_cars: Vec<VehicleSpec> = std::iter::repeat_with(|| Scenario::rand_car(base_rng))
-        .take(total_parked_cars)
+        .take(parked_cars.len())
         .collect();
 
     let mut open_spots_per_road: BTreeMap<RoadID, Vec<ParkingSpot>> = BTreeMap::new();
@@ -220,21 +234,18 @@ fn seed_parked_cars(
         }
     }
 
-    timer.start_iter("seed parked cars", parked_cars_per_bldg.len());
+    timer.start_iter("seed parked cars", parked_cars.len());
     let mut ok = true;
-    for (b, cnt) in parked_cars_per_bldg {
+    for (b, owner) in parked_cars {
         timer.next();
         if !ok {
             continue;
         }
-        for _ in 0..cnt {
-            if let Some(spot) = find_spot_near_building(b, &mut open_spots_per_road, map, timer) {
-                sim.seed_parked_car(rand_cars.pop().unwrap(), spot, Some(b));
-            } else {
-                timer.warn("Not enough room to seed parked cars.".to_string());
-                ok = false;
-                break;
-            }
+        if let Some(spot) = find_spot_near_building(b, &mut open_spots_per_road, map, timer) {
+            sim.seed_parked_car(rand_cars.pop().unwrap(), spot, Some(owner));
+        } else {
+            timer.warn("Not enough room to seed parked cars.".to_string());
+            ok = false;
         }
     }
 }
@@ -324,6 +335,67 @@ impl SpawnTrip {
                 stop2,
                 ped_speed: Scenario::rand_ped_speed(rng),
             },
+        }
+    }
+
+    pub fn start_from_bldg(&self) -> Option<BuildingID> {
+        match self {
+            SpawnTrip::CarAppearing { .. } => None,
+            SpawnTrip::MaybeUsingParkedCar(b, _) => Some(*b),
+            SpawnTrip::UsingBike(ref spot, _)
+            | SpawnTrip::JustWalking(ref spot, _)
+            | SpawnTrip::UsingTransit(ref spot, _, _, _, _) => match spot.connection {
+                SidewalkPOI::Building(b) => Some(b),
+                _ => None,
+            },
+        }
+    }
+
+    pub fn start_from_border(&self) -> Option<IntersectionID> {
+        match self {
+            // TODO CarAppearing might be from a border
+            SpawnTrip::CarAppearing { .. } => None,
+            SpawnTrip::MaybeUsingParkedCar(_, _) => None,
+            SpawnTrip::UsingBike(ref spot, _)
+            | SpawnTrip::JustWalking(ref spot, _)
+            | SpawnTrip::UsingTransit(ref spot, _, _, _, _) => match spot.connection {
+                SidewalkPOI::Border(i) => Some(i),
+                _ => None,
+            },
+        }
+    }
+
+    pub fn end_at_bldg(&self) -> Option<BuildingID> {
+        match self {
+            SpawnTrip::CarAppearing { ref goal, .. }
+            | SpawnTrip::MaybeUsingParkedCar(_, ref goal)
+            | SpawnTrip::UsingBike(_, ref goal) => match goal {
+                DrivingGoal::ParkNear(b) => Some(*b),
+                DrivingGoal::Border(_, _) => None,
+            },
+            SpawnTrip::JustWalking(_, ref spot) | SpawnTrip::UsingTransit(_, ref spot, _, _, _) => {
+                match spot.connection {
+                    SidewalkPOI::Building(b) => Some(b),
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    pub fn end_at_border(&self) -> Option<IntersectionID> {
+        match self {
+            SpawnTrip::CarAppearing { ref goal, .. }
+            | SpawnTrip::MaybeUsingParkedCar(_, ref goal)
+            | SpawnTrip::UsingBike(_, ref goal) => match goal {
+                DrivingGoal::ParkNear(_) => None,
+                DrivingGoal::Border(i, _) => Some(*i),
+            },
+            SpawnTrip::JustWalking(_, ref spot) | SpawnTrip::UsingTransit(_, ref spot, _, _, _) => {
+                match spot.connection {
+                    SidewalkPOI::Border(i) => Some(i),
+                    _ => None,
+                }
+            }
         }
     }
 }

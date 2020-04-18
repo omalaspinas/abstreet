@@ -38,17 +38,18 @@ impl TripManager {
         }
     }
 
-    pub fn new_person(&mut self, id: PersonID) {
+    pub fn new_person(&mut self, id: PersonID, has_car: bool) {
         assert_eq!(id.0, self.people.len());
         self.people.push(Person {
             id,
             trips: Vec::new(),
             state: PersonState::Limbo,
+            has_car,
         });
     }
-    pub fn random_person(&mut self) -> PersonID {
+    pub fn random_person(&mut self, has_car: bool) -> PersonID {
         let id = PersonID(self.people.len());
-        self.new_person(id);
+        self.new_person(id, has_car);
         id
     }
 
@@ -640,12 +641,6 @@ impl TripManager {
         std::mem::replace(&mut self.events, Vec::new())
     }
 
-    // Return trip start time too
-    pub fn find_trip_using_car(&self, id: CarID, home: BuildingID) -> Option<(TripID, Time)> {
-        let t = self.trips.iter().find(|t| t.uses_car(id, home))?;
-        Some((t.id, t.spawned_at))
-    }
-
     pub fn trip_info(&self, id: TripID) -> (Time, TripEndpoint, TripEndpoint, TripMode) {
         let t = &self.trips[id.0];
         (t.spawned_at, t.start.clone(), t.end.clone(), t.mode)
@@ -752,19 +747,6 @@ struct Trip {
 }
 
 impl Trip {
-    fn uses_car(&self, id: CarID, home: BuildingID) -> bool {
-        self.legs.iter().any(|l| match l {
-            TripLeg::Walk(_, _, ref walk_to) => match walk_to.connection {
-                SidewalkPOI::DeferredParkingSpot(b, _) => b == home,
-                _ => false,
-            },
-            // No need to look up the contents of a SidewalkPOI::ParkingSpot. If a trip uses a
-            // specific parked car, then there'll be a TripLeg::Drive with it already.
-            TripLeg::Drive(ref vehicle, _) => vehicle.id == id,
-            _ => false,
-        })
-    }
-
     // Returns true if this succeeds. If not, trip aborted.
     fn spawn_ped(
         &self,
@@ -970,6 +952,7 @@ pub struct Person {
     pub trips: Vec<TripID>,
     // TODO home
     pub state: PersonState,
+    pub has_car: bool,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]

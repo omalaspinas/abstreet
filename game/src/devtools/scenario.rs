@@ -1,5 +1,6 @@
 use crate::app::App;
 use crate::common::{tool_panel, Colorer, CommonState, ContextualActions, Warping};
+use crate::devtools::blocks::BlockMap;
 use crate::game::{State, Transition, WizardState};
 use crate::helpers::ID;
 use crate::managed::{WrappedComposite, WrappedOutcome};
@@ -40,48 +41,17 @@ impl ScenarioManager {
             for (idx2, trip) in person.trips.iter().enumerate() {
                 num_trips += 1;
                 let idx = (idx1, idx2);
-                // trips_from_bldg and trips_from_border
-                match &trip.trip {
-                    // TODO CarAppearing might be from a border
-                    SpawnTrip::CarAppearing { .. } => {}
-                    SpawnTrip::MaybeUsingParkedCar(b, _) => {
-                        trips_from_bldg.insert(*b, idx);
-                    }
-                    SpawnTrip::UsingBike(ref spot, _)
-                    | SpawnTrip::JustWalking(ref spot, _)
-                    | SpawnTrip::UsingTransit(ref spot, _, _, _, _) => match spot.connection {
-                        SidewalkPOI::Building(b) => {
-                            trips_from_bldg.insert(b, idx);
-                        }
-                        SidewalkPOI::Border(i) => {
-                            trips_from_border.insert(i, idx);
-                        }
-                        _ => {}
-                    },
+                if let Some(b) = trip.trip.start_from_bldg() {
+                    trips_from_bldg.insert(b, idx);
                 }
-
-                // trips_to_bldg and trips_to_border
-                match trip.trip {
-                    SpawnTrip::CarAppearing { ref goal, .. }
-                    | SpawnTrip::MaybeUsingParkedCar(_, ref goal)
-                    | SpawnTrip::UsingBike(_, ref goal) => match goal {
-                        DrivingGoal::ParkNear(b) => {
-                            trips_to_bldg.insert(*b, idx);
-                        }
-                        DrivingGoal::Border(i, _) => {
-                            trips_to_border.insert(*i, idx);
-                        }
-                    },
-                    SpawnTrip::JustWalking(_, ref spot)
-                    | SpawnTrip::UsingTransit(_, ref spot, _, _, _) => match spot.connection {
-                        SidewalkPOI::Building(b) => {
-                            trips_to_bldg.insert(b, idx);
-                        }
-                        SidewalkPOI::Border(i) => {
-                            trips_to_border.insert(i, idx);
-                        }
-                        _ => {}
-                    },
+                if let Some(i) = trip.trip.start_from_border() {
+                    trips_from_border.insert(i, idx);
+                }
+                if let Some(b) = trip.trip.end_at_bldg() {
+                    trips_to_bldg.insert(b, idx);
+                }
+                if let Some(i) = trip.trip.end_at_border() {
+                    trips_to_border.insert(i, idx);
                 }
             }
         }
@@ -94,18 +64,19 @@ impl ScenarioManager {
             vec!["0", "1-2", "3-4", "..."],
         );
         let mut total_cars_needed = 0;
-        for (b, count) in &scenario.parked_cars_per_bldg {
+        for (b, ppl) in scenario.parked_cars_per_bldg().consume() {
+            let count = ppl.len();
             total_cars_needed += count;
-            let color = if *count == 0 {
+            let color = if count == 0 {
                 continue;
-            } else if *count == 1 || *count == 2 {
+            } else if count == 1 || count == 2 {
                 Color::BLUE
-            } else if *count == 3 || *count == 4 {
+            } else if count == 3 || count == 4 {
                 Color::RED
             } else {
                 Color::BLACK
             };
-            bldg_colors.add_b(*b, color);
+            bldg_colors.add_b(b, color);
         }
 
         let (filled_spots, free_parking_spots) = app.primary.sim.get_all_parking_spots();
@@ -126,6 +97,7 @@ impl ScenarioManager {
                     ),
                 ],
                 vec![
+                    (hotkey(Key::B), "block map"),
                     (hotkey(Key::D), "dot map"),
                     (lctrl(Key::P), "stop showing paths"),
                 ],
@@ -152,6 +124,13 @@ impl State for ScenarioManager {
                 }
                 "dot map" => {
                     return Transition::Push(Box::new(DotMap::new(ctx, app, &self.scenario)));
+                }
+                "block map" => {
+                    return Transition::Push(Box::new(BlockMap::new(
+                        ctx,
+                        app,
+                        self.scenario.clone(),
+                    )));
                 }
                 // TODO Inactivate this sometimes
                 "stop showing paths" => {
