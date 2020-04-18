@@ -16,7 +16,7 @@ pub(crate) use self::events::Event;
 pub use self::events::TripPhaseType;
 pub use self::make::{
     ABTest, BorderSpawnOverTime, IndividTrip, OriginDestination, PersonSpec, Scenario,
-    ScenarioGenerator, SeedParkedCars, SimFlags, SpawnOverTime, SpawnTrip, TripSpawner, TripSpec,
+    ScenarioGenerator, SimFlags, SpawnOverTime, SpawnTrip, TripSpawner, TripSpec,
 };
 pub(crate) use self::mechanics::{
     DrivingSimState, IntersectionSimState, ParkingSimState, WalkingSimState,
@@ -153,7 +153,7 @@ impl VehicleType {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Vehicle {
     pub id: CarID,
-    pub owner: Option<BuildingID>,
+    pub owner: Option<PersonID>,
     pub vehicle_type: VehicleType,
     pub length: Distance,
     pub max_speed: Option<Speed>,
@@ -167,7 +167,7 @@ pub struct VehicleSpec {
 }
 
 impl VehicleSpec {
-    pub fn make(self, id: CarID, owner: Option<BuildingID>) -> Vehicle {
+    pub fn make(self, id: CarID, owner: Option<PersonID>) -> Vehicle {
         Vehicle {
             id,
             owner,

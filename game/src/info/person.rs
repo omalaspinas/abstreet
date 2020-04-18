@@ -1,6 +1,5 @@
 use crate::app::App;
 use crate::info::{building, header_btns, make_table, make_tabs, trip, Details, Tab};
-use crate::render::Renderable;
 use ezgui::{
     hotkey, Btn, Color, EventCtx, Key, Line, RewriteColor, Text, TextExt, TextSpan, Widget,
 };
@@ -29,42 +28,14 @@ pub fn trips(
         is_paused,
     );
 
-    // TODO This probably belongs on a different tab, but it's also convenient to see it up-front.
-    if let Some(p) = app.primary.sim.get_pandemic_model() {
-        // TODO add hospitalization/quarantine probably
-        let status = if p.is_sane(id) {
-            "Susceptible".to_string()
-        } else if p.is_exposed(id) {
-            format!("Exposed at {}", p.get_time(id).unwrap().ampm_tostring())
-        } else if p.is_infectious(id) {
-            format!("Infected at {}", p.get_time(id).unwrap().ampm_tostring())
-        } else if p.is_recovered(id) {
-            format!("Recovered at {}", p.get_time(id).unwrap().ampm_tostring())
-        } else if p.is_dead(id) {
-            format!("Dead at {}", p.get_time(id).unwrap().ampm_tostring())
-        } else {
-            // TODO More info here? Make these public too?
-            "Other (hospitalized or quarantined)".to_string()
-        };
-        rows.push(
-            Text::from_all(vec![
-                Line("Pandemic model state: ").secondary(),
-                Line(status),
-            ])
-            .draw(ctx)
-            .margin_below(5),
-        );
-    }
-
     let map = &app.primary.map;
     let sim = &app.primary.sim;
     let person = sim.get_person(id);
 
     // I'm sorry for bad variable names
     let mut wheres_waldo = true;
-    let mut is_first = true;
-    for t in &person.trips {
-        let (trip_status, maybe_info) = match sim.trip_to_agent(*t) {
+    for (idx, t) in person.trips.iter().enumerate() {
+        let (trip_status, color, maybe_info) = match sim.trip_to_agent(*t) {
             TripResult::TripNotStarted => {
                 if wheres_waldo {
                     wheres_waldo = false;
@@ -73,6 +44,7 @@ pub fn trips(
 
                 (
                     "future",
+                    Color::hex("#4CA7E9"),
                     open_trips
                         .get(t)
                         .map(|_| trip::future(ctx, app, *t, details)),
@@ -83,6 +55,7 @@ pub fn trips(
                 wheres_waldo = false;
                 (
                     "ongoing",
+                    Color::hex("#7FFA4D"),
                     open_trips
                         .get(t)
                         .map(|_| trip::ongoing(ctx, app, *t, a, details)),
@@ -92,12 +65,13 @@ pub fn trips(
                 // TODO No details. Weird case.
                 assert!(wheres_waldo);
                 wheres_waldo = false;
-                ("ongoing", None)
+                ("ongoing", Color::hex("#7FFA4D"), None)
             }
             TripResult::TripDone => {
                 assert!(wheres_waldo);
                 (
                     "finished",
+                    Color::hex("#A3A3A3"),
                     open_trips.get(t).map(|show_after| {
                         trip::finished(ctx, app, id, open_trips, *t, *show_after, details)
                     }),
@@ -105,7 +79,7 @@ pub fn trips(
             }
             TripResult::TripAborted => {
                 // Aborted trips can happen anywhere in the schedule right now
-                ("cancelled", None)
+                ("cancelled", Color::hex("#EB3223"), None)
             }
             TripResult::TripDoesntExist => unreachable!(),
         };
@@ -115,41 +89,39 @@ pub fn trips(
         rows.push(
             Widget::row(vec![
                 Text::from_all(vec![
-                    Line(format!("{} ", t)),
+                    Line(format!("Trip {} ", idx + 1)),
                     Line(trip_mode.ongoing_verb()).secondary(),
                 ])
-                .draw(ctx),
+                .draw(ctx)
+                .margin_right(21),
                 // TODO Vertical alignment is weird
-                if trip_status == "ongoing" {
-                    // TODO Padding doesn't work without wrapping in a row
-                    Widget::row(vec![Line(trip_status)
-                        .small()
-                        .fg(Color::hex("#7FFA4D"))
-                        .draw(ctx)])
+                Line(trip_status)
+                    .small()
+                    .fg(color)
+                    .draw(ctx)
+                    .container()
                     .fully_rounded()
-                    .outline(1.0, Color::hex("#7FFA4D"))
-                    .bg(Color::rgba(127, 250, 77, 0.2))
+                    .outline(1.0, color)
+                    .bg(color.alpha(0.2))
                     .padding(5)
-                } else if trip_status == "finished" {
+                    .margin_right(21),
+                if trip_status == "finished" {
                     if let Some(before) = app
                         .has_prebaked()
                         .and_then(|_| app.prebaked().finished_trip_time(*t))
                     {
                         let (after, _) = app.primary.sim.finished_trip_time(*t).unwrap();
-                        let mut txt = Text::from(Line("finished ").small());
-                        txt.append_all(cmp_duration_shorter(after, before));
-                        txt.draw(ctx)
+                        Text::from(cmp_duration_shorter(after, before)).draw(ctx)
                     } else {
-                        Line("finished").small().draw(ctx)
+                        Widget::nothing()
                     }
                 } else {
-                    Line(trip_status).small().draw(ctx)
-                }
-                .margin_horiz(15),
+                    Widget::nothing()
+                },
                 Btn::plaintext(if open_trips.contains_key(t) {
-                    "▲"
-                } else {
                     "▼"
+                } else {
+                    "▲"
                 })
                 .build(
                     ctx,
@@ -169,9 +141,8 @@ pub fn trips(
             .outline(2.0, Color::WHITE)
             .padding(16)
             .bg(app.cs.inner_panel)
-            .margin_above(if is_first { 0 } else { 16 }),
+            .margin_above(if idx == 0 { 0 } else { 16 }),
         );
-        is_first = false;
 
         if let Some(info) = maybe_info {
             rows.push(
@@ -226,6 +197,39 @@ pub fn bio(
     // - Has 17 pinky toe piercings (surprising, considering they're the state champ at
     // barefoot marathons)
 
+    if let Some(p) = app.primary.sim.get_pandemic_model() {
+        // TODO add hospitalization/quarantine probably
+        let status = if p.is_sane(id) {
+            "Susceptible".to_string()
+        } else if p.is_exposed(id) {
+            format!("Exposed at {}", p.get_time(id).unwrap().ampm_tostring())
+        } else if p.is_infectious(id) {
+            format!("Infected at {}", p.get_time(id).unwrap().ampm_tostring())
+        } else if p.is_recovered(id) {
+            format!("Recovered at {}", p.get_time(id).unwrap().ampm_tostring())
+        } else if p.is_dead(id) {
+            format!("Dead at {}", p.get_time(id).unwrap().ampm_tostring())
+        } else {
+            // TODO More info here? Make these public too?
+            "Other (hospitalized or quarantined)".to_string()
+        };
+        rows.push(
+            Text::from_all(vec![
+                Line("Pandemic model state: ").secondary(),
+                Line(status),
+            ])
+            .draw(ctx)
+            .margin_below(5),
+        );
+    }
+
+    if let Some(car) = app.primary.sim.get_parked_car_owned_by(id) {
+        rows.push(Btn::text_bg2(format!("Owner of {}", car)).build_def(ctx, None));
+        details
+            .hyperlinks
+            .insert(format!("Owner of {}", car), Tab::ParkedCar(car));
+    }
+
     rows
 }
 
@@ -275,17 +279,13 @@ pub fn parked_car(ctx: &EventCtx, app: &App, details: &mut Details, id: CarID) -
         header_btns(ctx),
     ]));
 
-    // TODO Owner, how long idle, prev trips, next trips, etc
+    // TODO how long idle, prev trips, next trips, etc
 
-    if let Some(b) = app.primary.sim.get_owner_of_car(id) {
-        // TODO Mention this, with a warp tool
-        details.unzoomed.push(
-            app.cs.associated_object,
-            app.primary.draw_map.get_b(b).get_outline(&app.primary.map),
-        );
-        details.zoomed.push(
-            app.cs.associated_object,
-            app.primary.draw_map.get_b(b).get_outline(&app.primary.map),
+    if let Some(p) = app.primary.sim.get_owner_of_car(id) {
+        rows.push(Btn::text_bg2(format!("Owned by {}", p)).build_def(ctx, None));
+        details.hyperlinks.insert(
+            format!("Owned by {}", p),
+            Tab::PersonTrips(p, BTreeMap::new()),
         );
     }
 
@@ -309,7 +309,7 @@ fn header(
             building::draw_occupants(details, app, b, Some(id));
             (
                 None,
-                ("inside", Some("../data/system/assets/tools/home.svg")),
+                ("indoors", Some("../data/system/assets/tools/home.svg")),
             )
         }
         PersonState::Trip(t) => (
@@ -408,25 +408,17 @@ fn current_status(ctx: &EventCtx, person: &Person, map: &Map) -> Widget {
 }
 
 // TODO Dedupe with the version in helpers
-fn cmp_duration_shorter(after: Duration, before: Duration) -> Vec<TextSpan> {
+fn cmp_duration_shorter(after: Duration, before: Duration) -> TextSpan {
     if after.epsilon_eq(before) {
-        vec![Line("(no change)").small()]
+        Line("no change").small()
     } else if after < before {
-        vec![
-            Line("(").small(),
-            Line(format!("{} faster", before - after))
-                .small()
-                .fg(Color::GREEN),
-            Line(")").small(),
-        ]
+        Line(format!("{} faster", before - after))
+            .small()
+            .fg(Color::GREEN)
     } else if after > before {
-        vec![
-            Line("(").small(),
-            Line(format!("{} slower", after - before))
-                .small()
-                .fg(Color::RED),
-            Line(")").small(),
-        ]
+        Line(format!("{} slower", after - before))
+            .small()
+            .fg(Color::RED)
     } else {
         unreachable!()
     }
