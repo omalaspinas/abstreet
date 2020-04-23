@@ -350,8 +350,8 @@ impl PandemicModel {
                 }
 
                 self.concentration.diffuse(
-                    0.025,
-                    0.025,
+                    0.002,
+                    0.002,
                     self.spacing.inner_meters(),
                     self.delta_t.inner_seconds(),
                 );

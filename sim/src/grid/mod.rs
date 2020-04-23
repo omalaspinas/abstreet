@@ -46,6 +46,7 @@ impl Grid {
     // or phi(x, y, t + dt) = phi(x, y, t) +
     //     dt * kappa / dx² * ( phi(x+dx, t) + phi(x - dx, y, t) + phi(x, y + dy t) + phi(x, y - dy, t) - 4 * phi(x, y, t))
     pub fn diffuse(&mut self, kappa: f64, decay: f64, dx: f64, dt: f64) {
+        assert!(1.0 - 4.0 * dt / (dx * dx) * kappa - dt * decay > 0.0);
         let cpy = self.clone();
         for x in 1..self.width - 1 {
             for y in 1..self.height - 1 {
@@ -62,6 +63,8 @@ impl Grid {
                 *x = 0.0
             }
         });
+        // let (min, max) = self.min_max();
+        // println!("min = {}, max = {}", min, max);
     }
 
     pub fn add_sources(
