@@ -117,8 +117,9 @@ pub struct ColorScheme {
     pub edits_layer: Color,
 
     // Misc
-    pub associated_object: Color,
     pub parking_trip: Color,
+    pub before_changes: Color,
+    pub after_changes: Color,
 }
 
 impl ColorScheme {
@@ -238,8 +239,9 @@ impl ColorScheme {
             edits_layer: hex("#12409D"),
 
             // Misc
-            associated_object: Color::PURPLE,
             parking_trip: hex("#4E30A6"),
+            before_changes: Color::BLUE,
+            after_changes: Color::RED,
         }
     }
 

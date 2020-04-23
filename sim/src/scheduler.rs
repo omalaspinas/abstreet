@@ -1,4 +1,6 @@
-use crate::{pandemic, AgentID, CarID, CreateCar, CreatePedestrian, PedestrianID};
+use crate::{
+    pandemic, AgentID, CarID, CreateCar, CreatePedestrian, PedestrianID, TripID, TripSpec,
+};
 use derivative::Derivative;
 use geom::{Duration, Histogram, Time};
 use map_model::{IntersectionID, Path, PathRequest};
@@ -11,6 +13,7 @@ pub enum Command {
     // If true, retry when there's no room to spawn somewhere
     SpawnCar(CreateCar, bool),
     SpawnPed(CreatePedestrian),
+    StartTrip(TripID, TripSpec, Option<PathRequest>, Option<Path>),
     UpdateCar(CarID),
     // Distinguish this from UpdateCar to avoid confusing things
     UpdateLaggyHead(CarID),
@@ -32,6 +35,7 @@ impl Command {
         match self {
             Command::SpawnCar(ref create, _) => CommandType::Car(create.vehicle.id),
             Command::SpawnPed(ref create) => CommandType::Ped(create.id),
+            Command::StartTrip(id, _, _, _) => CommandType::StartTrip(*id),
             Command::UpdateCar(id) => CommandType::Car(*id),
             Command::UpdateLaggyHead(id) => CommandType::CarLaggyHead(*id),
             Command::UpdatePed(id) => CommandType::Ped(*id),
@@ -46,6 +50,7 @@ impl Command {
 // CommandType may exist at a time.
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub enum CommandType {
+    StartTrip(TripID),
     Car(CarID),
     CarLaggyHead(CarID),
     Ped(PedestrianID),
@@ -87,6 +92,7 @@ pub struct Scheduler {
     queued_commands: BTreeMap<CommandType, (Command, Time)>,
 
     latest_time: Time,
+    last_time: Time,
     #[derivative(PartialEq = "ignore")]
     #[serde(skip_serializing, skip_deserializing)]
     delta_times: Histogram<Duration>,
@@ -98,6 +104,7 @@ impl Scheduler {
             items: BinaryHeap::new(),
             queued_commands: BTreeMap::new(),
             latest_time: Time::START_OF_DAY,
+            last_time: Time::START_OF_DAY,
             delta_times: Histogram::new(),
         }
     }
@@ -109,6 +116,7 @@ impl Scheduler {
                 self.latest_time, time
             );
         }
+        self.last_time = self.last_time.max(time);
         self.delta_times.add(time - self.latest_time);
 
         let cmd_type = cmd.to_type();
@@ -131,6 +139,7 @@ impl Scheduler {
                 self.latest_time, new_time
             );
         }
+        self.last_time = self.last_time.max(new_time);
 
         let cmd_type = cmd.to_type();
 
@@ -168,6 +177,10 @@ impl Scheduler {
         self.items.peek().as_ref().map(|cmd| cmd.time)
     }
 
+    pub fn get_last_time(&self) -> Time {
+        self.last_time
+    }
+
     // This API is safer than handing out a batch of items at a time, because while processing one
     // item, we might change the priority of other items or add new items. Don't make the caller
     // reconcile those changes -- just keep pulling items from here, one at a time.
@@ -195,6 +208,7 @@ impl Scheduler {
     // TODO Why not just implement Default on Path and use skip_serializing? Because we want to
     // serialize paths inside Router for live agents. We need to defer calling make_router and just
     // store the input in CreateCar.
+    // TODO Rethink all of this; probably broken by StartTrip.
     pub fn get_requests_for_savestate(&self) -> Vec<PathRequest> {
         let mut reqs = Vec::new();
         for (cmd, _) in self.queued_commands.values() {

@@ -29,7 +29,6 @@ pub struct PandemicModel {
 pub enum Cmd {
     BecomeHospitalized(PersonID),
     BecomeQuarantined(PersonID),
-    CancelFutureTrips(PersonID),
 }
 
 // TODO Pretend handle_event and handle_cmd also take in some object that lets you do things like:
@@ -163,8 +162,7 @@ impl PandemicModel {
                 if let Some(others) = self.bldgs.person_leaves_space(now, *person, *bldg) {
                     self.transmission(now, *person, others, scheduler);
                 } else {
-                    // TODO A person left a building, but they weren't inside of it? Not sure
-                    // what's happening here yet.
+                    panic!("{} left {}, but they weren't inside", person, bldg);
                 }
             }
             Event::TripPhaseStarting(_, p, _, _, tpt) => {
@@ -214,8 +212,6 @@ impl PandemicModel {
             Cmd::BecomeQuarantined(_person) => {
                 // self.quarantined.insert(person);
             }
-            // This is handled by the rest of the simulation
-            Cmd::CancelFutureTrips(_) => unreachable!(),
         }
     }
 

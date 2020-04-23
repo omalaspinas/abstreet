@@ -269,6 +269,34 @@ impl SpeedControls {
             }
         }
 
+        // TODO Need to do this anywhere that steps the sim, like TimeWarpScreen.
+        let alerts = app.primary.sim.clear_alerts();
+        if !alerts.is_empty() {
+            self.pause(ctx, app);
+
+            // Just go to the first one, but print all messages
+            let id = ID::Intersection(alerts[0].1);
+            return Some(Transition::PushTwice(
+                msg(
+                    "Alerts",
+                    alerts
+                        .into_iter()
+                        .map(|(_, _, msg)| {
+                            println!("Alert: {}", msg);
+                            msg
+                        })
+                        .collect(),
+                ),
+                Warping::new(
+                    ctx,
+                    id.canonical_point(&app.primary).unwrap(),
+                    Some(10.0),
+                    None,
+                    &mut app.primary,
+                ),
+            ));
+        }
+
         None
     }
 
@@ -306,6 +334,7 @@ struct JumpToTime {
 impl JumpToTime {
     fn new(ctx: &mut EventCtx, app: &App, maybe_mode: Option<GameplayMode>) -> JumpToTime {
         let target = app.primary.sim.time();
+        let end_of_day = app.primary.sim.get_end_of_day();
         JumpToTime {
             target,
             maybe_mode,
@@ -326,7 +355,7 @@ impl JumpToTime {
                             GeomBatch::from(vec![(
                                 Color::WHITE.alpha(0.7),
                                 area_under_curve(
-                                    app.prebaked().active_agents(Time::END_OF_DAY),
+                                    app.prebaked().active_agents(end_of_day),
                                     // TODO Auto fill width
                                     500.0,
                                     50.0,
@@ -341,7 +370,7 @@ impl JumpToTime {
                         ctx,
                         0.25 * ctx.canvas.window_width,
                         25.0,
-                        target.to_percent(Time::END_OF_DAY).min(1.0),
+                        target.to_percent(end_of_day).min(1.0),
                     )
                     .named("time slider")
                     .margin(10),
@@ -393,8 +422,11 @@ impl State for JumpToTime {
             },
             None => {}
         }
-        let target =
-            Time::END_OF_DAY.percent_of(self.composite.slider("time slider").get_percent());
+        let target = app
+            .primary
+            .sim
+            .get_end_of_day()
+            .percent_of(self.composite.slider("time slider").get_percent());
         if target != self.target {
             self.target = target;
             self.composite.replace(
@@ -485,6 +517,10 @@ impl State for TimeWarpScreen {
                 ));
             }
             // TODO secondary for a/b test mode
+            // For now, don't stop for this
+            for (t, i, msg) in app.primary.sim.clear_alerts() {
+                println!("- Alert: At {}, near {}, {}", t, i, msg);
+            }
 
             // I'm covered in shame for not doing this from the start.
             let mut txt = Text::from(Line("Let's do the time warp again!").small_heading());
@@ -558,8 +594,13 @@ impl TimePanel {
                         // This is manually tuned
                         let width = 300.0;
                         let height = 15.0;
-                        // Just clamp past 24 hours
-                        let percent = app.primary.sim.time().to_percent(Time::END_OF_DAY).min(1.0);
+                        // Just clamp if we simulate past the expected end
+                        let percent = app
+                            .primary
+                            .sim
+                            .time()
+                            .to_percent(app.primary.sim.get_end_of_day())
+                            .min(1.0);
 
                         // TODO Why is the rounding so hard? The white background is always rounded
                         // at both ends. The moving bar should always be rounded on the left, flat

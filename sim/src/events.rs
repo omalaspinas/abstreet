@@ -11,6 +11,7 @@ use serde_derive::{Deserialize, Serialize};
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Event {
     CarReachedParkingSpot(CarID, ParkingSpot),
+    CarLeftParkingSpot(CarID, ParkingSpot),
     CarOrBikeReachedBorder(CarID, IntersectionID),
 
     BusArrivedAtStop(CarID, BusRouteID, BusStopID),
@@ -45,6 +46,8 @@ pub enum Event {
     // Just use for parking replanning. Not happy about copying the full path in here, but the way
     // to plumb info into Analytics is Event.
     PathAmended(Path),
+
+    Alert(IntersectionID, String),
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -58,6 +61,7 @@ pub enum TripPhaseType {
     RidingBus(BusRouteID, BusStopID, CarID),
     Aborted,
     Finished,
+    DelayedStart,
 }
 
 impl TripPhaseType {
@@ -71,6 +75,7 @@ impl TripPhaseType {
             TripPhaseType::RidingBus(r, _, _) => format!("riding bus {}", map.get_br(r).name),
             TripPhaseType::Aborted => "trip aborted due to some bug".to_string(),
             TripPhaseType::Finished => "trip finished".to_string(),
+            TripPhaseType::DelayedStart => "delayed by previous trip taking too long".to_string(),
         }
     }
 }

@@ -1,27 +1,16 @@
-use crate::psrc::{Endpoint, Mode, Parcel, Purpose};
+use crate::psrc::{Endpoint, Mode, OrigTrip, Parcel};
 use crate::PopDat;
 use abstutil::{prettyprint_usize, MultiMap, Timer};
-use geom::{Distance, Duration, LonLat, Polygon, Pt2D, Time};
-use map_model::{BuildingID, IntersectionID, Map, PathConstraints, Position};
-use sim::{
-    DrivingGoal, IndividTrip, PersonID, PersonSpec, Scenario, SidewalkSpot, SpawnTrip, TripSpec,
-};
-use std::collections::{BTreeMap, HashMap};
+use geom::{LonLat, Pt2D};
+use map_model::{BuildingID, IntersectionID, Map, PathConstraints};
+use sim::{DrivingGoal, IndividTrip, PersonID, PersonSpec, Scenario, SidewalkSpot, SpawnTrip};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct Trip {
     pub from: TripEndpt,
     pub to: TripEndpt,
-    pub depart_at: Time,
-    pub purpose: (Purpose, Purpose),
-    pub mode: Mode,
-    // These are an upper bound when TripEndpt::Border is involved.
-    pub trip_time: Duration,
-    pub trip_dist: Distance,
-    // (household, person within household)
-    pub person: (usize, usize),
-    // (tour, false is to destination and true is back from dst, trip within half-tour)
-    pub seq: (usize, bool, usize),
+    pub orig: OrigTrip,
 }
 
 #[derive(Clone, Debug)]
@@ -33,76 +22,44 @@ pub enum TripEndpt {
 }
 
 impl Trip {
-    pub fn end_time(&self) -> Time {
-        self.depart_at + self.trip_time
-    }
-
-    pub fn to_spawn_trip(&self, map: &Map) -> Option<SpawnTrip> {
-        match self.mode {
+    fn to_spawn_trip(&self, map: &Map) -> SpawnTrip {
+        match self.orig.mode {
             Mode::Drive => match self.from {
-                TripEndpt::Border(i, _) => {
-                    if let Some(start) = TripSpec::spawn_car_at(
-                        Position::new(
-                            map.get_i(i).get_outgoing_lanes(map, PathConstraints::Car)[0],
-                            Distance::ZERO,
-                        ),
-                        map,
-                    ) {
-                        Some(SpawnTrip::CarAppearing {
-                            start,
-                            goal: self.to.driving_goal(PathConstraints::Car, map),
-                            is_bike: false,
-                        })
-                    } else {
-                        // TODO need to be able to emit warnings from parallelize
-                        //timer.warn(format!("No room for car to appear at {:?}", self.from));
-                        None
-                    }
+                TripEndpt::Border(i, _) => SpawnTrip::FromBorder {
+                    i,
+                    goal: self.to.driving_goal(PathConstraints::Car, map),
+                    is_bike: false,
+                },
+                TripEndpt::Building(b) => {
+                    SpawnTrip::UsingParkedCar(b, self.to.driving_goal(PathConstraints::Car, map))
                 }
-                TripEndpt::Building(b) => Some(SpawnTrip::MaybeUsingParkedCar(
-                    b,
-                    self.to.driving_goal(PathConstraints::Car, map),
-                )),
             },
             Mode::Bike => match self.from {
-                TripEndpt::Building(b) => Some(SpawnTrip::UsingBike(
+                TripEndpt::Building(b) => SpawnTrip::UsingBike(
                     SidewalkSpot::building(b, map),
                     self.to.driving_goal(PathConstraints::Bike, map),
-                )),
-                TripEndpt::Border(i, _) => {
-                    if let Some(start) = TripSpec::spawn_car_at(
-                        Position::new(
-                            map.get_i(i).get_outgoing_lanes(map, PathConstraints::Bike)[0],
-                            Distance::ZERO,
-                        ),
-                        map,
-                    ) {
-                        Some(SpawnTrip::CarAppearing {
-                            start,
-                            goal: self.to.driving_goal(PathConstraints::Bike, map),
-                            is_bike: true,
-                        })
-                    } else {
-                        //timer.warn(format!("No room for bike to appear at {:?}", self.from));
-                        None
-                    }
-                }
+                ),
+                TripEndpt::Border(i, _) => SpawnTrip::FromBorder {
+                    i,
+                    goal: self.to.driving_goal(PathConstraints::Bike, map),
+                    is_bike: true,
+                },
             },
-            Mode::Walk => Some(SpawnTrip::JustWalking(
+            Mode::Walk => SpawnTrip::JustWalking(
                 self.from.start_sidewalk_spot(map),
                 self.to.end_sidewalk_spot(map),
-            )),
+            ),
             Mode::Transit => {
                 let start = self.from.start_sidewalk_spot(map);
                 let goal = self.to.end_sidewalk_spot(map);
                 if let Some((stop1, stop2, route)) =
                     map.should_use_transit(start.sidewalk_pos, goal.sidewalk_pos)
                 {
-                    Some(SpawnTrip::UsingTransit(start, goal, route, stop1, stop2))
+                    SpawnTrip::UsingTransit(start, goal, route, stop1, stop2)
                 } else {
                     //timer.warn(format!("{:?} not actually using transit, because pathfinding
                     // didn't find any useful route", trip));
-                    Some(SpawnTrip::JustWalking(start, goal))
+                    SpawnTrip::JustWalking(start, goal)
                 }
             }
         }
@@ -151,13 +108,6 @@ impl TripEndpt {
                 DrivingGoal::end_at_border(map.get_i(*i).some_incoming_road(map), constraints, map)
                     .unwrap()
             }
-        }
-    }
-
-    pub fn polygon<'a>(&self, map: &'a Map) -> &'a Polygon {
-        match self {
-            TripEndpt::Building(b) => &map.get_b(*b).polygon,
-            TripEndpt::Border(i, _) => &map.get_i(*i).polygon,
         }
     }
 }
@@ -215,39 +165,29 @@ pub fn clip_trips(map: &Map, timer: &mut Timer) -> (Vec<Trip>, HashMap<BuildingI
         .collect();
 
     let total_trips = popdat.trips.len();
-    let maybe_results: Vec<Option<Trip>> = timer.parallelize("clip trips", popdat.trips, |trip| {
+    let maybe_results: Vec<Option<Trip>> = timer.parallelize("clip trips", popdat.trips, |orig| {
         let from = TripEndpt::new(
-            &trip.from,
+            &orig.from,
             map,
             &osm_id_to_bldg,
-            match trip.mode {
+            match orig.mode {
                 Mode::Walk | Mode::Transit => &incoming_borders_walking,
                 Mode::Drive => &incoming_borders_driving,
                 Mode::Bike => &incoming_borders_biking,
             },
         )?;
         let to = TripEndpt::new(
-            &trip.to,
+            &orig.to,
             map,
             &osm_id_to_bldg,
-            match trip.mode {
+            match orig.mode {
                 Mode::Walk | Mode::Transit => &outgoing_borders_walking,
                 Mode::Drive => &outgoing_borders_driving,
                 Mode::Bike => &outgoing_borders_biking,
             },
         )?;
 
-        let trip = Trip {
-            from,
-            to,
-            depart_at: trip.depart_at,
-            purpose: trip.purpose,
-            mode: trip.mode,
-            trip_time: trip.trip_time,
-            trip_dist: trip.trip_dist,
-            person: trip.person,
-            seq: trip.seq,
-        };
+        let trip = Trip { from, to, orig };
 
         match (&trip.from, &trip.to) {
             (TripEndpt::Border(_, _), TripEndpt::Border(_, _)) => {
@@ -285,19 +225,19 @@ pub fn trips_to_scenario(map: &Map, timer: &mut Timer) -> Scenario {
     let (trips, _) = clip_trips(map, timer);
     let orig_trips = trips.len();
 
-    let parked_cars_per_bldg = count_cars(&trips, map);
-
     let mut individ_trips: Vec<Option<IndividTrip>> = Vec::new();
     // person -> (trip seq, index into individ_trips)
     let mut trips_per_person: MultiMap<(usize, usize), ((usize, bool, usize), usize)> =
         MultiMap::new();
-    for (trip, depart, person, seq) in timer
-        .parallelize("turn PSRC trips into SpawnTrips", trips, |trip| {
-            trip.to_spawn_trip(map)
-                .map(|spawn| (spawn, trip.depart_at, trip.person, trip.seq))
+    for (trip, depart, person, seq) in
+        timer.parallelize("turn PSRC trips into SpawnTrips", trips, |trip| {
+            (
+                trip.to_spawn_trip(map),
+                trip.orig.depart_at,
+                trip.orig.person,
+                trip.orig.seq,
+            )
         })
-        .into_iter()
-        .flatten()
     {
         let idx = individ_trips.len();
         individ_trips.push(Some(IndividTrip { depart, trip }));
@@ -311,7 +251,7 @@ pub fn trips_to_scenario(map: &Map, timer: &mut Timer) -> Scenario {
     ));
 
     let mut people = Vec::new();
-    for (_, seq_trips) in trips_per_person.consume() {
+    for (orig_id, seq_trips) in trips_per_person.consume() {
         let id = PersonID(people.len());
         let mut trips = Vec::new();
         for (_, idx) in seq_trips {
@@ -321,7 +261,8 @@ pub fn trips_to_scenario(map: &Map, timer: &mut Timer) -> Scenario {
         // Actually, the sequence in the Soundcast dataset crosses midnight. Don't do that; sort by
         // departure time starting with midnight.
         trips.sort_by_key(|t| t.depart);
-        people.push(PersonSpec { id, trips });
+
+        people.push(PersonSpec { id, orig_id, trips });
     }
     for maybe_t in individ_trips {
         if maybe_t.is_some() {
@@ -333,35 +274,7 @@ pub fn trips_to_scenario(map: &Map, timer: &mut Timer) -> Scenario {
         scenario_name: "weekday".to_string(),
         map_name: map.get_name().to_string(),
         people,
-        parked_cars_per_bldg,
         only_seed_buses: None,
     }
-}
-
-fn count_cars(trips: &Vec<Trip>, map: &Map) -> BTreeMap<BuildingID, usize> {
-    // How many parked cars do we need to spawn near each building?
-    // TODO This assumes trips are instantaneous. At runtime, somebody might try to use a parked
-    // car from a building, but one hasn't been delivered yet.
-    let mut parked_cars_per_bldg = BTreeMap::new();
-    let mut avail_per_bldg = BTreeMap::new();
-    for b in map.all_buildings() {
-        parked_cars_per_bldg.insert(b.id, 0);
-        avail_per_bldg.insert(b.id, 0);
-    }
-    for trip in trips {
-        if trip.mode != Mode::Drive {
-            continue;
-        }
-        if let TripEndpt::Building(b) = trip.from {
-            if avail_per_bldg[&b] > 0 {
-                *avail_per_bldg.get_mut(&b).unwrap() -= 1;
-            } else {
-                *parked_cars_per_bldg.get_mut(&b).unwrap() += 1;
-            }
-        }
-        if let TripEndpt::Building(b) = trip.to {
-            *avail_per_bldg.get_mut(&b).unwrap() += 1;
-        }
-    }
-    parked_cars_per_bldg
+    .remove_weird_schedules(map)
 }

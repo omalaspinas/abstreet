@@ -4,9 +4,8 @@ use crate::game::{msg, State, Transition};
 use crate::sandbox::dashboards::DashTab;
 use crate::sandbox::SandboxMode;
 use ezgui::{
-    Btn, Color, Composite, EventCtx, GfxCtx, Line, LinePlot, Outcome, PlotOptions, Series, Widget,
+    Btn, Composite, EventCtx, GfxCtx, Line, LinePlot, Outcome, PlotOptions, Series, Widget,
 };
-use geom::Time;
 
 pub struct ActiveTraffic {
     composite: Composite,
@@ -16,7 +15,7 @@ impl ActiveTraffic {
     pub fn new(ctx: &mut EventCtx, app: &App) -> Box<dyn State> {
         let mut active_agents = vec![Series {
             label: "After changes".to_string(),
-            color: Color::RED,
+            color: app.cs.after_changes,
             pts: app
                 .primary
                 .sim
@@ -26,8 +25,10 @@ impl ActiveTraffic {
         if app.has_prebaked().is_some() {
             active_agents.push(Series {
                 label: "Before changes".to_string(),
-                color: Color::BLUE.alpha(0.5),
-                pts: app.prebaked().active_agents(Time::END_OF_DAY),
+                color: app.cs.before_changes.alpha(0.5),
+                pts: app
+                    .prebaked()
+                    .active_agents(app.primary.sim.get_end_of_day()),
             });
         }
 

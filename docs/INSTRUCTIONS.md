@@ -10,11 +10,11 @@ Grab a pre-built binary release -- updated every Sunday, announced at
 [r/abstreet](http://old.reddit.com/r/abstreet):
 
 - Windows:
-  https://github.com/dabreegster/abstreet/releases/download/v0.1.36/abstreet_windows_v0_1_36.zip
+  https://github.com/dabreegster/abstreet/releases/download/v0.1.37/abstreet_windows_v0_1_37.zip
 - Mac:
-  https://github.com/dabreegster/abstreet/releases/download/v0.1.36/abstreet_mac_v0_1_36.zip
+  https://github.com/dabreegster/abstreet/releases/download/v0.1.37/abstreet_mac_v0_1_37.zip
 - Linux:
-  https://github.com/dabreegster/abstreet/releases/download/v0.1.36/abstreet_linux_v0_1_36.zip
+  https://github.com/dabreegster/abstreet/releases/download/v0.1.37/abstreet_linux_v0_1_37.zip
 
 Unzip the folder, then run `play_abstreet.sh` or `play_abstreet.bat`. On
 Windows, you'll probably get a warning about running software from an unknown
@@ -48,3 +48,4 @@ Other binary data bundled in:
 
 - Overpass font (https://fonts.google.com/specimen/Overpass, Open Font License)
 - Bungee fonts (https://fonts.google.com/specimen/Bungee, Open Font License)
+- Material Design icons (https://material.io/resources/icons, Apache license)
