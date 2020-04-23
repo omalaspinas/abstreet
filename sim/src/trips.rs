@@ -615,22 +615,28 @@ impl TripManager {
             per_mode,
         )
     }
-    pub fn num_ppl(&self) -> (usize, usize, usize) {
+    pub fn num_ppl(&self) -> (usize, usize, usize, usize, usize) {
         let mut ppl_in_bldg = 0;
         let mut ppl_off_map = 0;
+        let mut ppl_trip = 0;
+        let mut ppl_limbo = 0;
         for p in &self.people {
             match p.state {
-                PersonState::Trip(_) => {}
+                PersonState::Trip(_) => {
+                    ppl_trip += 1;
+                }
                 PersonState::Inside(_) => {
                     ppl_in_bldg += 1;
                 }
                 PersonState::OffMap => {
                     ppl_off_map += 1;
                 }
-                PersonState::Limbo => {}
+                PersonState::Limbo => {
+                    ppl_limbo += 1;
+                }
             }
         }
-        (self.people.len(), ppl_in_bldg, ppl_off_map)
+        (self.people.len(), ppl_in_bldg, ppl_off_map, ppl_trip, ppl_limbo)
     }
 
     pub fn is_done(&self) -> bool {

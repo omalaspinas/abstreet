@@ -895,7 +895,7 @@ impl Sim {
         self.trips.num_trips()
     }
     // (total number of people, just in buildings, just off map)
-    pub fn num_ppl(&self) -> (usize, usize, usize) {
+    pub fn num_ppl(&self) -> (usize, usize, usize, usize, usize) {
         self.trips.num_ppl()
     }
 
