@@ -111,15 +111,24 @@ pub fn future(ctx: &mut EventCtx, app: &App, trip: TripID, details: &mut Details
 
     let mut col = Vec::new();
 
-    if app.has_prebaked().is_some() {
-        let phases = app.prebaked().get_trip_phases(trip, &app.primary.map);
-        let estimated_trip_time =
-            phases.last().as_ref().and_then(|p| p.end_time).unwrap() - start_time;
+    let now = app.primary.sim.time();
+    if now > start_time {
+        col.extend(make_table(
+            ctx,
+            vec![("Start delayed", (now - start_time).to_string())],
+        ));
+    }
+
+    if let Some(estimated_trip_time) = app
+        .has_prebaked()
+        .and_then(|_| app.prebaked().finished_trip_time(trip))
+    {
         col.extend(make_table(
             ctx,
             vec![("Estimated trip time", estimated_trip_time.to_string())],
         ));
 
+        let phases = app.prebaked().get_trip_phases(trip, &app.primary.map);
         col.push(make_timeline(ctx, app, trip, details, phases, None));
     } else {
         // TODO Warp buttons. make_table is showing its age.
@@ -229,6 +238,30 @@ pub fn finished(
     Widget::col(col)
 }
 
+pub fn aborted(ctx: &mut EventCtx, app: &App, trip: TripID) -> Widget {
+    let (start_time, trip_start, trip_end, _) = app.primary.sim.trip_info(trip);
+
+    let mut col = vec![Text::from_multiline(vec![
+        Line("A glitch in the simulation happened."),
+        Line("This trip, however, did not."),
+    ])
+    .draw(ctx)];
+
+    // TODO Warp buttons. make_table is showing its age.
+    let (_, _, name1) = endpoint(&trip_start, &app.primary.map);
+    let (_, _, name2) = endpoint(&trip_end, &app.primary.map);
+    col.extend(make_table(
+        ctx,
+        vec![
+            ("Departure", start_time.ampm_tostring()),
+            ("From", name1),
+            ("To", name2),
+        ],
+    ));
+
+    Widget::col(col)
+}
+
 fn make_timeline(
     ctx: &mut EventCtx,
     app: &App,
@@ -316,6 +349,7 @@ fn make_timeline(
             TripPhaseType::WaitingForBus(_, _) => app.cs.bus_stop,
             TripPhaseType::RidingBus(_, _, _) => app.cs.bus_lane,
             TripPhaseType::Aborted | TripPhaseType::Finished => unreachable!(),
+            TripPhaseType::DelayedStart => Color::YELLOW,
         }
         .alpha(0.7);
 
@@ -377,6 +411,7 @@ fn make_timeline(
                     "../data/system/assets/timeline/riding_bus.svg"
                 }
                 TripPhaseType::Aborted | TripPhaseType::Finished => unreachable!(),
+                TripPhaseType::DelayedStart => "../data/system/assets/timeline/delayed_start.svg",
             },
             // TODO Hardcoded layouting...
             Pt2D::new(0.5 * phase_width, -20.0),

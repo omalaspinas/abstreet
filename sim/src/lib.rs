@@ -168,6 +168,7 @@ pub struct VehicleSpec {
 
 impl VehicleSpec {
     pub fn make(self, id: CarID, owner: Option<PersonID>) -> Vehicle {
+        assert_eq!(id.1, self.vehicle_type);
         Vehicle {
             id,
             owner,
@@ -241,20 +242,23 @@ impl DrivingGoal {
         }
     }
 
-    pub(crate) fn make_router(&self, path: Path, map: &Map, vt: VehicleType) -> Router {
+    // Only possible failure is if there's not a way to go bike->sidewalk at the end
+    pub(crate) fn make_router(&self, path: Path, map: &Map, vt: VehicleType) -> Option<Router> {
         match self {
             DrivingGoal::ParkNear(b) => {
                 if vt == VehicleType::Bike {
                     // TODO Stop closer to the building?
                     let end = path.last_step().as_lane();
-                    Router::bike_then_stop(path, map.get_l(end).length() / 2.0)
+                    Router::bike_then_stop(path, map.get_l(end).length() / 2.0, map)
                 } else {
-                    Router::park_near(path, *b)
+                    Some(Router::park_near(path, *b))
                 }
             }
-            DrivingGoal::Border(i, last_lane) => {
-                Router::end_at_border(path, map.get_l(*last_lane).length(), *i)
-            }
+            DrivingGoal::Border(i, last_lane) => Some(Router::end_at_border(
+                path,
+                map.get_l(*last_lane).length(),
+                *i,
+            )),
         }
     }
 
@@ -274,15 +278,11 @@ pub struct SidewalkSpot {
 
 impl SidewalkSpot {
     // Pretty hacky case
-    pub fn deferred_parking_spot(
-        start_bldg: BuildingID,
-        goal: DrivingGoal,
-        map: &Map,
-    ) -> SidewalkSpot {
+    pub fn deferred_parking_spot() -> SidewalkSpot {
         SidewalkSpot {
-            connection: SidewalkPOI::DeferredParkingSpot(start_bldg, goal),
+            connection: SidewalkPOI::DeferredParkingSpot,
             // Dummy value
-            sidewalk_pos: map.get_b(start_bldg).front_path.sidewalk,
+            sidewalk_pos: Position::new(LaneID(0), Distance::ZERO),
         }
     }
 
@@ -401,7 +401,7 @@ pub enum SidewalkPOI {
     // Note that for offstreet parking, the path will be the same as the building's front path.
     ParkingSpot(ParkingSpot),
     // Don't actually know where this goes yet!
-    DeferredParkingSpot(BuildingID, DrivingGoal),
+    DeferredParkingSpot,
     Building(BuildingID),
     BusStop(BusStopID),
     Border(IntersectionID),

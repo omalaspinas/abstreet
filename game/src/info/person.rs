@@ -41,14 +41,24 @@ pub fn trips(
                     wheres_waldo = false;
                     rows.push(current_status(ctx, person, map));
                 }
-
-                (
-                    "future",
-                    Color::hex("#4CA7E9"),
-                    open_trips
-                        .get(t)
-                        .map(|_| trip::future(ctx, app, *t, details)),
-                )
+                let start_time = sim.trip_info(*t).0;
+                if sim.time() > start_time {
+                    (
+                        "delayed start",
+                        Color::YELLOW,
+                        open_trips
+                            .get(t)
+                            .map(|_| trip::future(ctx, app, *t, details)),
+                    )
+                } else {
+                    (
+                        "future",
+                        Color::hex("#4CA7E9"),
+                        open_trips
+                            .get(t)
+                            .map(|_| trip::future(ctx, app, *t, details)),
+                    )
+                }
             }
             TripResult::Ok(a) => {
                 assert!(wheres_waldo);
@@ -65,7 +75,11 @@ pub fn trips(
                 // TODO No details. Weird case.
                 assert!(wheres_waldo);
                 wheres_waldo = false;
-                ("ongoing", Color::hex("#7FFA4D"), None)
+                (
+                    "ongoing",
+                    Color::hex("#7FFA4D"),
+                    open_trips.get(t).map(|_| Widget::nothing()),
+                )
             }
             TripResult::TripDone => {
                 assert!(wheres_waldo);
@@ -79,7 +93,11 @@ pub fn trips(
             }
             TripResult::TripAborted => {
                 // Aborted trips can happen anywhere in the schedule right now
-                ("cancelled", Color::hex("#EB3223"), None)
+                (
+                    "broken",
+                    Color::hex("#EB3223"),
+                    open_trips.get(t).map(|_| trip::aborted(ctx, app, *t)),
+                )
             }
             TripResult::TripDoesntExist => unreachable!(),
         };
@@ -339,7 +357,6 @@ fn header(
             },
         ),
         PersonState::OffMap => (None, ("off map", None)),
-        PersonState::Limbo => (None, ("in limbo", None)),
     };
 
     rows.push(Widget::row(vec![
@@ -400,9 +417,6 @@ fn current_status(ctx: &EventCtx, person: &Person, map: &Map) -> Widget {
         }
         PersonState::Trip(_) => unreachable!(),
         PersonState::OffMap => "Currently outside the map boundaries".draw_text(ctx),
-        PersonState::Limbo => "Currently in limbo -- they broke out of the Matrix! Woops. (A bug \
-                               occurred)"
-            .draw_text(ctx),
     })
     .margin_vert(16)
 }
