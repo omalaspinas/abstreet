@@ -269,6 +269,34 @@ impl SpeedControls {
             }
         }
 
+        // TODO Need to do this anywhere that steps the sim, like TimeWarpScreen.
+        let alerts = app.primary.sim.clear_alerts();
+        if !alerts.is_empty() {
+            self.pause(ctx, app);
+
+            // Just go to the first one, but print all messages
+            let id = ID::Intersection(alerts[0].1);
+            return Some(Transition::PushTwice(
+                msg(
+                    "Alerts",
+                    alerts
+                        .into_iter()
+                        .map(|(_, _, msg)| {
+                            println!("Alert: {}", msg);
+                            msg
+                        })
+                        .collect(),
+                ),
+                Warping::new(
+                    ctx,
+                    id.canonical_point(&app.primary).unwrap(),
+                    Some(10.0),
+                    None,
+                    &mut app.primary,
+                ),
+            ));
+        }
+
         None
     }
 
@@ -489,6 +517,10 @@ impl State for TimeWarpScreen {
                 ));
             }
             // TODO secondary for a/b test mode
+            // For now, don't stop for this
+            for (t, i, msg) in app.primary.sim.clear_alerts() {
+                println!("- Alert: At {}, near {}, {}", t, i, msg);
+            }
 
             // I'm covered in shame for not doing this from the start.
             let mut txt = Text::from(Line("Let's do the time warp again!").small_heading());

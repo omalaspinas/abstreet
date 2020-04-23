@@ -47,11 +47,11 @@ fn run_experiment(map: &Map, sim: &mut Sim) {
                 prettyprint_usize(sim.get_pandemic_model().unwrap().count_recovered()),
                 prettyprint_usize(sim.get_pandemic_model().unwrap().count_dead()),
             );
-            let (tot, ppl_bld, ppl_off_map, ppl_trip, ppl_limbo) = sim.num_ppl();
+            let (tot, ppl_bld, ppl_off_map, ppl_trip) = sim.num_ppl();
             println!(
-                "{} {} {} {} {} {}",
+                "{} {} {} {} {}",
                 sim.time().inner_seconds(),
-                tot, ppl_bld, ppl_off_map, ppl_trip, ppl_limbo,
+                tot, ppl_bld, ppl_off_map, ppl_trip,
             );
 
         },
