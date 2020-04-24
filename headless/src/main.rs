@@ -41,11 +41,11 @@ fn run_experiment(map: &Map, sim: &mut Sim) {
             println!(
                 "{} {} {} {} {} {}",
                 sim.time().inner_seconds(),
-                prettyprint_usize(sim.get_pandemic_model().unwrap().count_sane()),
-                prettyprint_usize(sim.get_pandemic_model().unwrap().count_exposed()),
-                prettyprint_usize(sim.get_pandemic_model().unwrap().count_infected()),
-                prettyprint_usize(sim.get_pandemic_model().unwrap().count_recovered()),
-                prettyprint_usize(sim.get_pandemic_model().unwrap().count_dead()),
+                sim.get_pandemic_model().unwrap().count_sane(),
+                sim.get_pandemic_model().unwrap().count_exposed(),
+                sim.get_pandemic_model().unwrap().count_infected(),
+                sim.get_pandemic_model().unwrap().count_recovered(),
+                sim.get_pandemic_model().unwrap().count_dead(),
             );
             let (tot, ppl_bld, ppl_off_map, ppl_trip) = sim.num_ppl();
             println!(
