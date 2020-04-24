@@ -698,7 +698,6 @@ impl TripManager {
         let mut ppl_in_bldg = 0;
         let mut ppl_off_map = 0;
         let mut ppl_trip = 0;
-        let mut ppl_limbo = 0;
         for p in &self.people {
             match p.state {
                 PersonState::Trip(_) => {

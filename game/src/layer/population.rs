@@ -76,7 +76,7 @@ fn make_controls(
     opts: &Options,
     colors_and_labels: Option<(Vec<Color>, Vec<String>)>,
 ) -> Composite {
-    let (total_ppl, ppl_in_bldg, ppl_off_map) = app.primary.sim.num_ppl();
+    let (total_ppl, ppl_in_bldg, ppl_off_map, _ppl_trip) = app.primary.sim.num_ppl();
 
     let mut col = vec![
         Widget::row(vec![

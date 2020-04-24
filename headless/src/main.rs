@@ -49,7 +49,7 @@ fn run_experiment(map: &Map, sim: &mut Sim) {
             );
             let (tot, ppl_bld, ppl_off_map, ppl_trip) = sim.num_ppl();
             println!(
-                "{} {} {} {} {}",
+                "t = {}, tot = {}, build = {}, off = {}, trip = {}",
                 sim.time().inner_seconds(),
                 tot, ppl_bld, ppl_off_map, ppl_trip,
             );
