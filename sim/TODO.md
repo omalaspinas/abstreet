@@ -7,12 +7,6 @@
      * if they cross each other one can have transmission (they enter traversable in opposite order)
      * and/or if they follow each other they also can transmit (the enter traversable in the same order).
      * we could add a memory that last for some time that stores the position of the pedestrian for some time to simulate virus emission.
-  * 
-  * En
-* 
-* Map of Geneva
-
-
-The heatmap is in the UI layer, it sounds like this should live in the sim crate. mechanics/walking.rs has really simple state. peds_per_traversable is a mapping from Traversable::Lane (sidewalks only) or Traversable::Turn to list of pedestrians there
-
-How about in PandemicModel, you store some new struct per LaneID (just for the sidewalks). You know when a pedestrian enters a sidewalk by listening to AgentEntersTraversable. If you need to know when they leave a sidewalk, we can add AgentLeavesTraversable
+  3. From (2) data we could be more precise and interpolate between beginning/end.
+* From OSM get a map of Geneva
+* Make sim ouf sound cast run.
