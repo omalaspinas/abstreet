@@ -1,4 +1,6 @@
-use crate::{AgentID, CarID, ParkingSpot, PedestrianID, PersonID, TripID, TripMode};
+use crate::{
+    AgentID, CarID, OffMapLocation, ParkingSpot, PedestrianID, PersonID, TripID, TripMode,
+};
 use geom::Duration;
 use map_model::{
     BuildingID, BusRouteID, BusStopID, IntersectionID, LaneID, Map, Path, PathRequest, Traversable,
@@ -12,16 +14,18 @@ use serde_derive::{Deserialize, Serialize};
 pub enum Event {
     CarReachedParkingSpot(CarID, ParkingSpot),
     CarLeftParkingSpot(CarID, ParkingSpot),
-    CarOrBikeReachedBorder(CarID, IntersectionID),
 
     BusArrivedAtStop(CarID, BusRouteID, BusStopID),
     BusDepartedFromStop(CarID, BusRouteID, BusStopID),
 
     PersonEntersBuilding(PersonID, BuildingID),
     PersonLeavesBuilding(PersonID, BuildingID),
+    PersonLeavesMap(PersonID, IntersectionID, Option<OffMapLocation>),
+    PersonEntersMap(PersonID, IntersectionID, Option<OffMapLocation>),
+    PersonEntersRemoteBuilding(PersonID, OffMapLocation),
+    PersonLeavesRemoteBuilding(PersonID, OffMapLocation),
 
     PedReachedParkingSpot(PedestrianID, ParkingSpot),
-    PedReachedBorder(PedestrianID, IntersectionID),
 
     BikeStoppedAtSidewalk(CarID, LaneID),
 
@@ -34,20 +38,22 @@ pub enum Event {
         total_time: Duration,
         blocked_time: Duration,
     },
-    TripAborted(TripID, TripMode),
-    TripPhaseStarting(
-        TripID,
-        PersonID,
-        TripMode,
-        Option<PathRequest>,
-        TripPhaseType,
-    ),
+    TripAborted(TripID),
+    TripPhaseStarting(TripID, PersonID, Option<PathRequest>, TripPhaseType),
 
     // Just use for parking replanning. Not happy about copying the full path in here, but the way
     // to plumb info into Analytics is Event.
     PathAmended(Path),
 
-    Alert(IntersectionID, String),
+    Alert(AlertLocation, String),
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub enum AlertLocation {
+    Nil,
+    Intersection(IntersectionID),
+    Person(PersonID),
+    Building(BuildingID),
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -62,6 +68,7 @@ pub enum TripPhaseType {
     Aborted,
     Finished,
     DelayedStart,
+    Remote,
 }
 
 impl TripPhaseType {
@@ -76,6 +83,7 @@ impl TripPhaseType {
             TripPhaseType::Aborted => "trip aborted due to some bug".to_string(),
             TripPhaseType::Finished => "trip finished".to_string(),
             TripPhaseType::DelayedStart => "delayed by previous trip taking too long".to_string(),
+            TripPhaseType::Remote => "remote trip outside the map boundaries".to_string(),
         }
     }
 }

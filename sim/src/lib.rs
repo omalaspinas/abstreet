@@ -12,10 +12,10 @@ mod trips;
 
 pub use self::analytics::{Analytics, TripPhase};
 pub(crate) use self::events::Event;
-pub use self::events::TripPhaseType;
+pub use self::events::{AlertLocation, TripPhaseType};
 pub use self::make::{
-    ABTest, BorderSpawnOverTime, IndividTrip, OriginDestination, PersonSpec, Scenario,
-    ScenarioGenerator, SimFlags, SpawnOverTime, SpawnTrip, TripSpawner, TripSpec,
+    ABTest, BorderSpawnOverTime, IndividTrip, OffMapLocation, OriginDestination, PersonSpec,
+    Scenario, ScenarioGenerator, SimFlags, SpawnOverTime, SpawnTrip, TripSpawner, TripSpec,
 };
 pub(crate) use self::mechanics::{
     DrivingSimState, IntersectionSimState, ParkingSimState, WalkingSimState,
@@ -23,9 +23,9 @@ pub(crate) use self::mechanics::{
 pub(crate) use self::pandemic::PandemicModel;
 pub(crate) use self::router::{ActionAtEnd, Router};
 pub(crate) use self::scheduler::{Command, Scheduler};
-pub use self::sim::{AgentProperties, Sim, SimOptions};
+pub use self::sim::{AgentProperties, AlertHandler, Sim, SimOptions};
 pub(crate) use self::transit::TransitSimState;
-pub use self::trips::{Person, PersonState, TripCount, TripResult};
+pub use self::trips::{Person, PersonState, TripResult};
 pub use self::trips::{TripEndpoint, TripMode};
 pub(crate) use self::trips::{TripLeg, TripManager};
 pub use crate::render::{
@@ -185,16 +185,6 @@ pub enum ParkingSpot {
     Offstreet(BuildingID, usize),
 }
 
-impl ParkingSpot {
-    pub fn onstreet(lane: LaneID, idx: usize) -> ParkingSpot {
-        ParkingSpot::Onstreet(lane, idx)
-    }
-
-    pub fn offstreet(bldg: BuildingID, idx: usize) -> ParkingSpot {
-        ParkingSpot::Offstreet(bldg, idx)
-    }
-}
-
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ParkedCar {
     pub vehicle: Vehicle,
@@ -206,13 +196,14 @@ pub struct ParkedCar {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DrivingGoal {
     ParkNear(BuildingID),
-    Border(IntersectionID, LaneID),
+    Border(IntersectionID, LaneID, Option<OffMapLocation>),
 }
 
 impl DrivingGoal {
     pub fn end_at_border(
         dr: DirectedRoadID,
         constraints: PathConstraints,
+        destination: Option<OffMapLocation>,
         map: &Map,
     ) -> Option<DrivingGoal> {
         let lanes = dr.lanes(constraints, map);
@@ -220,7 +211,7 @@ impl DrivingGoal {
             None
         } else {
             // TODO ideally could use any
-            Some(DrivingGoal::Border(dr.dst_i(map), lanes[0]))
+            Some(DrivingGoal::Border(dr.dst_i(map), lanes[0], destination))
         }
     }
 
@@ -236,7 +227,7 @@ impl DrivingGoal {
                 }
                 PathConstraints::Bus | PathConstraints::Pedestrian => unreachable!(),
             },
-            DrivingGoal::Border(_, l) => Position::new(*l, map.get_l(*l).length()),
+            DrivingGoal::Border(_, l, _) => Position::new(*l, map.get_l(*l).length()),
         }
     }
 
@@ -252,7 +243,7 @@ impl DrivingGoal {
                     Some(Router::park_near(path, *b))
                 }
             }
-            DrivingGoal::Border(i, last_lane) => Some(Router::end_at_border(
+            DrivingGoal::Border(i, last_lane, _) => Some(Router::end_at_border(
                 path,
                 map.get_l(*last_lane).length(),
                 *i,
@@ -263,7 +254,7 @@ impl DrivingGoal {
     pub fn pt(&self, map: &Map) -> Pt2D {
         match self {
             DrivingGoal::ParkNear(b) => map.get_b(*b).polygon.center(),
-            DrivingGoal::Border(i, _) => map.get_i(*i).polygon.center(),
+            DrivingGoal::Border(i, _, _) => map.get_i(*i).polygon.center(),
         }
     }
 }
@@ -336,14 +327,18 @@ impl SidewalkSpot {
     }
 
     // Recall sidewalks are bidirectional.
-    pub fn start_at_border(i: IntersectionID, map: &Map) -> Option<SidewalkSpot> {
+    pub fn start_at_border(
+        i: IntersectionID,
+        origin: Option<OffMapLocation>,
+        map: &Map,
+    ) -> Option<SidewalkSpot> {
         let lanes = map
             .get_i(i)
             .get_outgoing_lanes(map, PathConstraints::Pedestrian);
         if !lanes.is_empty() {
             return Some(SidewalkSpot {
                 sidewalk_pos: Position::new(lanes[0], Distance::ZERO),
-                connection: SidewalkPOI::Border(i),
+                connection: SidewalkPOI::Border(i, origin),
             });
         }
 
@@ -355,18 +350,22 @@ impl SidewalkSpot {
         }
         Some(SidewalkSpot {
             sidewalk_pos: Position::new(lanes[0], map.get_l(lanes[0]).length()),
-            connection: SidewalkPOI::Border(i),
+            connection: SidewalkPOI::Border(i, origin),
         })
     }
 
-    pub fn end_at_border(i: IntersectionID, map: &Map) -> Option<SidewalkSpot> {
+    pub fn end_at_border(
+        i: IntersectionID,
+        destination: Option<OffMapLocation>,
+        map: &Map,
+    ) -> Option<SidewalkSpot> {
         let lanes = map
             .get_i(i)
             .get_incoming_lanes(map, PathConstraints::Pedestrian);
         if !lanes.is_empty() {
             return Some(SidewalkSpot {
                 sidewalk_pos: Position::new(lanes[0], map.get_l(lanes[0]).length()),
-                connection: SidewalkPOI::Border(i),
+                connection: SidewalkPOI::Border(i, destination),
             });
         }
 
@@ -378,7 +377,7 @@ impl SidewalkSpot {
         }
         Some(SidewalkSpot {
             sidewalk_pos: Position::new(lanes[0], Distance::ZERO),
-            connection: SidewalkPOI::Border(i),
+            connection: SidewalkPOI::Border(i, destination),
         })
     }
 
@@ -402,7 +401,7 @@ pub enum SidewalkPOI {
     DeferredParkingSpot,
     Building(BuildingID),
     BusStop(BusStopID),
-    Border(IntersectionID),
+    Border(IntersectionID, Option<OffMapLocation>),
     // The equivalent position on the nearest driving/bike lane
     BikeRack(Position),
     SuddenlyAppear,

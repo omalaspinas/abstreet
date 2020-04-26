@@ -1,11 +1,10 @@
 use crate::{
-    AgentID, Analytics, CarID, Command, CreateCar, DrawCarInput, DrawPedCrowdInput,
+    AgentID, AlertLocation, Analytics, CarID, Command, CreateCar, DrawCarInput, DrawPedCrowdInput,
     DrawPedestrianInput, DrivingSimState, Event, GetDrawAgents, IntersectionSimState,
     PandemicModel, ParkedCar, ParkingSimState, ParkingSpot, PedestrianID, Person, PersonID,
-    PersonState, Router, Scheduler, SidewalkPOI, SidewalkSpot, TransitSimState, TripCount,
-    TripEndpoint, TripID, TripManager, TripMode, TripPhaseType, TripPositions, TripResult,
-    TripSpawner, UnzoomedAgent, Vehicle, VehicleSpec, VehicleType, WalkingSimState, BUS_LENGTH,
-    MIN_CAR_LENGTH,
+    PersonState, Router, Scheduler, SidewalkPOI, SidewalkSpot, TransitSimState, TripEndpoint,
+    TripID, TripManager, TripMode, TripPhaseType, TripPositions, TripResult, TripSpawner,
+    UnzoomedAgent, Vehicle, VehicleSpec, VehicleType, WalkingSimState, BUS_LENGTH, MIN_CAR_LENGTH,
 };
 use abstutil::Timer;
 use derivative::Derivative;
@@ -61,6 +60,10 @@ pub struct Sim {
     #[derivative(PartialEq = "ignore")]
     #[serde(skip_serializing, skip_deserializing)]
     check_for_gridlock: Option<(Time, Duration)>,
+
+    #[derivative(PartialEq = "ignore")]
+    #[serde(skip_serializing, skip_deserializing)]
+    alerts: AlertHandler,
 }
 
 #[derive(Clone)]
@@ -72,6 +75,23 @@ pub struct SimOptions {
     pub recalc_lanechanging: bool,
     pub break_turn_conflict_cycles: bool,
     pub enable_pandemic_model: Option<XorShiftRng>,
+    pub alerts: AlertHandler,
+}
+
+#[derive(Clone)]
+pub enum AlertHandler {
+    // Just print the alert to STDOUT
+    Print,
+    // Print the alert to STDOUT and don't proceed until the UI calls clear_alerts()
+    Block,
+    // Don't do anything
+    Silence,
+}
+
+impl std::default::Default for AlertHandler {
+    fn default() -> AlertHandler {
+        AlertHandler::Print
+    }
 }
 
 impl SimOptions {
@@ -84,6 +104,7 @@ impl SimOptions {
             recalc_lanechanging: true,
             break_turn_conflict_cycles: false,
             enable_pandemic_model: None,
+            alerts: AlertHandler::Print,
         }
     }
 }
@@ -123,6 +144,7 @@ impl Sim {
             step_count: 0,
             trip_positions: None,
             check_for_gridlock: None,
+            alerts: opts.alerts,
 
             analytics: Analytics::new(),
         }
@@ -141,8 +163,8 @@ impl Sim {
         self.dispatch_events(Vec::new(), map);
     }
 
-    pub fn get_free_spots(&self, l: LaneID) -> Vec<ParkingSpot> {
-        self.parking.get_free_spots(l)
+    pub fn get_free_onstreet_spots(&self, l: LaneID) -> Vec<ParkingSpot> {
+        self.parking.get_free_onstreet_spots(l)
     }
 
     pub fn get_free_offstreet_spots(&self, b: BuildingID) -> Vec<ParkingSpot> {
@@ -195,22 +217,11 @@ impl Sim {
     }
 
     // TODO Should these two be in TripSpawner?
-    pub fn new_person(
-        &mut self,
-        p: PersonID,
-        ped_speed: Speed,
-        car_spec: Option<VehicleSpec>,
-        bike_spec: Option<VehicleSpec>,
-    ) {
-        self.trips.new_person(p, ped_speed, car_spec, bike_spec);
+    pub fn new_person(&mut self, p: PersonID, ped_speed: Speed, vehicle_specs: Vec<VehicleSpec>) {
+        self.trips.new_person(p, ped_speed, vehicle_specs);
     }
-    pub fn random_person(
-        &mut self,
-        ped_speed: Speed,
-        car_spec: Option<VehicleSpec>,
-        bike_spec: Option<VehicleSpec>,
-    ) -> &Person {
-        self.trips.random_person(ped_speed, car_spec, bike_spec)
+    pub fn random_person(&mut self, ped_speed: Speed, vehicle_specs: Vec<VehicleSpec>) -> &Person {
+        self.trips.random_person(ped_speed, vehicle_specs)
     }
     pub(crate) fn seed_parked_car(&mut self, vehicle: Vehicle, spot: ParkingSpot) {
         self.parking.reserve_spot(spot);
@@ -438,12 +449,6 @@ impl Sim {
                         events.push(Event::TripPhaseStarting(
                             trip,
                             person,
-                            // TODO sketchy...
-                            if create_car.vehicle.id.1 == VehicleType::Car {
-                                TripMode::Drive
-                            } else {
-                                TripMode::Bike
-                            },
                             Some(create_car.req.clone()),
                             if create_car.vehicle.id.1 == VehicleType::Car {
                                 TripPhaseType::Driving
@@ -485,7 +490,6 @@ impl Sim {
                 events.push(Event::TripPhaseStarting(
                     create_ped.trip,
                     create_ped.person,
-                    TripMode::Walk,
                     Some(create_ped.req.clone()),
                     TripPhaseType::Walking,
                 ));
@@ -497,6 +501,10 @@ impl Sim {
                         SidewalkPOI::Building(b1),
                         SidewalkPOI::ParkingSpot(ParkingSpot::Offstreet(b2, idx)),
                     ) if b1 == b2 => {
+                        events.push(Event::Alert(
+                            AlertLocation::Building(*b1),
+                            format!("car leaving bldg"),
+                        ));
                         self.trips.ped_reached_parking_spot(
                             self.time,
                             create_ped.id,
@@ -566,6 +574,15 @@ impl Sim {
                     .unwrap()
                     .handle_cmd(self.time, cmd, &mut self.scheduler);
             }
+            Command::FinishRemoteTrip(trip) => {
+                self.trips.remote_trip_finished(
+                    self.time,
+                    trip,
+                    map,
+                    &mut self.parking,
+                    &mut self.scheduler,
+                );
+            }
         }
 
         // Record events at precisely the time they occur.
@@ -597,10 +614,25 @@ impl Sim {
 
         timer.start(format!("Advance sim to {}", end_time));
         while self.time < end_time {
-            if !self.analytics.alerts.is_empty() {
-                break;
-            }
             self.minimal_step(map, end_time - self.time);
+            if !self.analytics.alerts.is_empty() {
+                match self.alerts {
+                    AlertHandler::Print => {
+                        for (t, loc, msg) in self.analytics.alerts.drain(..) {
+                            println!("Alert at {} ({:?}): {}", t, loc, msg);
+                        }
+                    }
+                    AlertHandler::Block => {
+                        for (t, loc, msg) in &self.analytics.alerts {
+                            println!("Alert at {} ({:?}): {}", t, loc, msg);
+                        }
+                        break;
+                    }
+                    AlertHandler::Silence => {
+                        self.analytics.alerts.clear();
+                    }
+                }
+            }
             if Duration::realtime_elapsed(last_update) >= Duration::seconds(1.0) {
                 // TODO Not timer?
                 println!(
@@ -638,10 +670,25 @@ impl Sim {
         let end_time = self.time + dt;
 
         while self.time < end_time && Duration::realtime_elapsed(started_at) < real_time_limit {
-            if !self.analytics.alerts.is_empty() {
-                break;
-            }
             self.minimal_step(map, end_time - self.time);
+            if !self.analytics.alerts.is_empty() {
+                match self.alerts {
+                    AlertHandler::Print => {
+                        for (t, loc, msg) in self.analytics.alerts.drain(..) {
+                            println!("Alert at {} ({:?}): {}", t, loc, msg);
+                        }
+                    }
+                    AlertHandler::Block => {
+                        for (t, loc, msg) in &self.analytics.alerts {
+                            println!("Alert at {} ({:?}): {}", t, loc, msg);
+                        }
+                        break;
+                    }
+                    AlertHandler::Silence => {
+                        self.analytics.alerts.clear();
+                    }
+                }
+            }
             if let Some((ref mut t, dt)) = self.check_for_gridlock {
                 if self.time >= *t {
                     *t += dt;
@@ -866,10 +913,6 @@ impl Sim {
         self.trips.num_ppl()
     }
 
-    pub fn count_trips(&self, endpt: TripEndpoint) -> TripCount {
-        self.trips.count_trips(endpt, self.time)
-    }
-
     pub fn debug_ped(&self, id: PedestrianID) {
         self.walking.debug_ped(id);
         self.trips.debug_trip(AgentID::Pedestrian(id));
@@ -950,10 +993,8 @@ impl Sim {
             .get_owner_of_car(id)
             .or_else(|| self.parking.get_owner_of_car(id))
     }
-    // Only currently parked cars
-    pub fn get_parked_car_owned_by(&self, id: PersonID) -> Option<CarID> {
-        let p = self.parking.get_parked_car_owned_by(id)?;
-        Some(p.vehicle.id)
+    pub fn lookup_parked_car(&self, id: CarID) -> Option<&ParkedCar> {
+        self.parking.lookup_parked_car(id)
     }
 
     pub fn lookup_person(&self, id: PersonID) -> Option<&Person> {
@@ -976,7 +1017,7 @@ impl Sim {
 
         let id = CarID(idx, VehicleType::Car);
         // Only cars can be parked.
-        if self.parking.does_car_exist(id) {
+        if self.parking.lookup_parked_car(id).is_some() {
             return Some(id);
         }
 
@@ -1039,7 +1080,9 @@ impl Sim {
 
     pub fn does_agent_exist(&self, id: AgentID) -> bool {
         match id {
-            AgentID::Car(id) => self.parking.does_car_exist(id) || self.driving.does_car_exist(id),
+            AgentID::Car(id) => {
+                self.parking.lookup_parked_car(id).is_some() || self.driving.does_car_exist(id)
+            }
             AgentID::Pedestrian(id) => self.walking.does_ped_exist(id),
         }
     }
@@ -1145,7 +1188,7 @@ impl Sim {
         }
     }
 
-    pub fn clear_alerts(&mut self) -> Vec<(Time, IntersectionID, String)> {
+    pub fn clear_alerts(&mut self) -> Vec<(Time, AlertLocation, String)> {
         std::mem::replace(&mut self.analytics.alerts, Vec::new())
     }
 }

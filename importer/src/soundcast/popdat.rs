@@ -1,14 +1,20 @@
 use abstutil::{prettyprint_usize, FileWithProgress, Timer};
 use geom::{Distance, Duration, FindClosest, LonLat, Pt2D, Time};
 use map_model::Map;
-use popdat::psrc::{Endpoint, Mode, OrigTrip, Parcel, Purpose};
-use serde_derive::Deserialize;
+use serde_derive::{Deserialize, Serialize};
+use sim::TripMode;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 
+#[derive(Serialize, Deserialize)]
+pub struct PopDat {
+    pub trips: Vec<OrigTrip>,
+    pub parcels: BTreeMap<i64, Parcel>,
+}
+
 // Extract trip demand data from PSRC's Soundcast outputs.
-pub fn import_psrc_data() {
+pub fn import_data() {
     let mut timer = abstutil::Timer::new("creating popdat");
     let (trips, parcels) = import_trips(
         "../data/input/parcels_urbansim.txt",
@@ -16,7 +22,7 @@ pub fn import_psrc_data() {
         &mut timer,
     )
     .unwrap();
-    let popdat = popdat::PopDat { trips, parcels };
+    let popdat = PopDat { trips, parcels };
     abstutil::write_binary(abstutil::path_popdat(), &popdat);
 }
 
@@ -192,6 +198,7 @@ fn import_parcels(
             Endpoint {
                 pos: pt,
                 osm_building,
+                parcel_id: id,
             },
         );
     }
@@ -218,16 +225,16 @@ fn get_purpose(code: &str) -> Purpose {
 }
 
 // From https://github.com/psrc/soundcast/wiki/Outputs#trip-file-_triptsv, mode
-fn get_mode(code: &str) -> Mode {
+fn get_mode(code: &str) -> TripMode {
     match code {
-        "1.0" => Mode::Walk,
-        "2.0" => Mode::Bike,
-        "3.0" | "4.0" | "5.0" => Mode::Drive,
+        "1.0" => TripMode::Walk,
+        "2.0" => TripMode::Bike,
+        "3.0" | "4.0" | "5.0" => TripMode::Drive,
         // TODO Park-and-ride and school bus as walk-to-transit is a little weird.
-        "6.0" | "7.0" | "8.0" => Mode::Transit,
+        "6.0" | "7.0" | "8.0" => TripMode::Transit,
         // TODO Invalid code, what's this one mean? I only see a few examples, so just default to
         // walking.
-        "0.0" => Mode::Walk,
+        "0.0" => TripMode::Walk,
         _ => panic!("Unknown mode {}", code),
     }
 }
@@ -260,4 +267,49 @@ struct RawParcel {
     parkhr_p: usize,
     xcoord_p: f64,
     ycoord_p: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OrigTrip {
+    pub from: Endpoint,
+    pub to: Endpoint,
+    pub depart_at: Time,
+    pub mode: TripMode,
+
+    // (household, person within household)
+    pub person: (usize, usize),
+    // (tour, false is to destination and true is back from dst, trip within half-tour)
+    pub seq: (usize, bool, usize),
+    pub purpose: (Purpose, Purpose),
+    pub trip_time: Duration,
+    pub trip_dist: Distance,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Endpoint {
+    pub pos: LonLat,
+    pub osm_building: Option<i64>,
+    pub parcel_id: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Parcel {
+    pub num_households: usize,
+    pub num_employees: usize,
+    pub offstreet_parking_spaces: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub enum Purpose {
+    Home,
+    Work,
+    School,
+    Escort,
+    PersonalBusiness,
+    Shopping,
+    Meal,
+    Social,
+    Recreation,
+    Medical,
+    ParkAndRideTransfer,
 }

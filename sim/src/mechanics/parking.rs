@@ -25,11 +25,6 @@ pub struct ParkingSimState {
     )]
     occupants: BTreeMap<ParkingSpot, CarID>,
     reserved_spots: BTreeSet<ParkingSpot>,
-    #[serde(
-        serialize_with = "serialize_btreemap",
-        deserialize_with = "deserialize_btreemap"
-    )]
-    owner_to_car: BTreeMap<PersonID, CarID>,
 
     // On-street specific
     onstreet_lanes: BTreeMap<LaneID, ParkingLane>,
@@ -59,7 +54,6 @@ impl ParkingSimState {
             parked_cars: BTreeMap::new(),
             occupants: BTreeMap::new(),
             reserved_spots: BTreeSet::new(),
-            owner_to_car: BTreeMap::new(),
 
             onstreet_lanes: BTreeMap::new(),
             driving_to_parking_lanes: MultiMap::new(),
@@ -76,17 +70,16 @@ impl ParkingSimState {
         }
         for b in map.all_buildings() {
             if let Some(ref p) = b.parking {
-                if map.get_l(p.driving_pos.lane()).parking_blackhole.is_some() {
-                    continue;
-                }
-                sim.num_spots_per_offstreet.insert(b.id, p.num_stalls);
+                // Map construction is supposed to enforce this
+                assert!(map.get_l(p.driving_pos.lane()).parking_blackhole.is_none());
+                sim.num_spots_per_offstreet.insert(b.id, p.num_spots);
                 sim.driving_to_offstreet.insert(p.driving_pos.lane(), b.id);
             }
         }
         sim
     }
 
-    pub fn get_free_spots(&self, l: LaneID) -> Vec<ParkingSpot> {
+    pub fn get_free_onstreet_spots(&self, l: LaneID) -> Vec<ParkingSpot> {
         let mut spots: Vec<ParkingSpot> = Vec::new();
         if let Some(lane) = self.onstreet_lanes.get(&l) {
             for spot in lane.spots() {
@@ -95,16 +88,13 @@ impl ParkingSimState {
                 }
             }
         }
-        for b in self.driving_to_offstreet.get(l) {
-            spots.extend(self.get_free_offstreet_spots(*b));
-        }
         spots
     }
 
     pub fn get_free_offstreet_spots(&self, b: BuildingID) -> Vec<ParkingSpot> {
         let mut spots: Vec<ParkingSpot> = Vec::new();
         for idx in 0..self.num_spots_per_offstreet.get(&b).cloned().unwrap_or(0) {
-            let spot = ParkingSpot::offstreet(b, idx);
+            let spot = ParkingSpot::Offstreet(b, idx);
             if self.is_free(spot) {
                 spots.push(spot);
             }
@@ -115,6 +105,16 @@ impl ParkingSimState {
     pub fn reserve_spot(&mut self, spot: ParkingSpot) {
         assert!(self.is_free(spot));
         self.reserved_spots.insert(spot);
+
+        // Sanity check the spot exists
+        match spot {
+            ParkingSpot::Onstreet(l, idx) => {
+                assert!(idx < self.onstreet_lanes[&l].spot_dist_along.len());
+            }
+            ParkingSpot::Offstreet(b, idx) => {
+                assert!(idx < self.num_spots_per_offstreet[&b]);
+            }
+        }
     }
 
     pub fn remove_parked_car(&mut self, p: ParkedCar) {
@@ -124,34 +124,20 @@ impl ParkingSimState {
         self.occupants
             .remove(&p.spot)
             .expect("remove_parked_car missing from occupants");
-        // All parked cars have owners
-        self.owner_to_car
-            .remove(&p.vehicle.owner.unwrap())
-            .expect("remove_parked_car missing from owner_to_car");
         self.events
             .push(Event::CarLeftParkingSpot(p.vehicle.id, p.spot));
     }
 
     pub fn add_parked_car(&mut self, p: ParkedCar) {
-        assert!(self.reserved_spots.remove(&p.spot));
         self.events
             .push(Event::CarReachedParkingSpot(p.vehicle.id, p.spot));
+
+        assert!(self.reserved_spots.remove(&p.spot));
+
         assert!(!self.occupants.contains_key(&p.spot));
         self.occupants.insert(p.spot, p.vehicle.id);
-        // All parked cars have owners
-        let owner = p.vehicle.owner.unwrap();
-        if let Some(car) = self.owner_to_car.get(&owner) {
-            // TODO Doppel-cars! Some people apparently need multiple cars. Until then, don't leak
-            // spots and have doubles of the same car.
-            assert_eq!(*car, p.vehicle.id);
-            println!(
-                "{} has is trying to park a doppel-car. Warping {}.",
-                owner, car
-            );
-            let other = self.parked_cars[car].clone();
-            self.remove_parked_car(other);
-        }
-        self.owner_to_car.insert(owner, p.vehicle.id);
+
+        assert!(!self.parked_cars.contains_key(&p.vehicle.id));
         self.parked_cars.insert(p.vehicle.id, p);
     }
 
@@ -187,10 +173,6 @@ impl ParkingSimState {
             }
             ParkingSpot::Offstreet(_, _) => None,
         }
-    }
-
-    pub fn does_car_exist(&self, id: CarID) -> bool {
-        self.parked_cars.contains_key(&id)
     }
 
     // There's no DrawCarInput for cars parked offstreet, so we need this.
@@ -262,7 +244,7 @@ impl ParkingSimState {
             }
 
             for idx in 0..self.num_spots_per_offstreet[&b] {
-                let spot = ParkingSpot::offstreet(*b, idx);
+                let spot = ParkingSpot::Offstreet(*b, idx);
                 if self.is_free(spot) {
                     maybe_spot = Some(spot);
                     break;
@@ -306,7 +288,7 @@ impl ParkingSimState {
     pub fn get_offstreet_parked_cars(&self, b: BuildingID) -> Vec<&ParkedCar> {
         let mut results = Vec::new();
         for idx in 0..self.num_spots_per_offstreet.get(&b).cloned().unwrap_or(0) {
-            if let Some(car) = self.occupants.get(&ParkingSpot::offstreet(b, idx)) {
+            if let Some(car) = self.occupants.get(&ParkingSpot::Offstreet(b, idx)) {
                 results.push(&self.parked_cars[&car]);
             }
         }
@@ -316,9 +298,8 @@ impl ParkingSimState {
     pub fn get_owner_of_car(&self, id: CarID) -> Option<PersonID> {
         self.parked_cars.get(&id).and_then(|p| p.vehicle.owner)
     }
-    pub fn get_parked_car_owned_by(&self, id: PersonID) -> Option<ParkedCar> {
-        let car = self.owner_to_car.get(&id)?;
-        Some(self.parked_cars[car].clone())
+    pub fn lookup_parked_car(&self, id: CarID) -> Option<&ParkedCar> {
+        self.parked_cars.get(&id)
     }
 
     // (Filled, available)
@@ -335,12 +316,14 @@ impl ParkingSimState {
                 }
             }
         }
-        for (b, idx) in &self.num_spots_per_offstreet {
-            let spot = ParkingSpot::Offstreet(*b, *idx);
-            if self.is_free(spot) {
-                available.push(spot);
-            } else {
-                filled.push(spot);
+        for (b, num_spots) in &self.num_spots_per_offstreet {
+            for idx in 0..*num_spots {
+                let spot = ParkingSpot::Offstreet(*b, idx);
+                if self.is_free(spot) {
+                    available.push(spot);
+                } else {
+                    filled.push(spot);
+                }
             }
         }
 
@@ -455,7 +438,7 @@ impl ParkingLane {
     fn spots(&self) -> Vec<ParkingSpot> {
         let mut spots = Vec::new();
         for idx in 0..self.spot_dist_along.len() {
-            spots.push(ParkingSpot::onstreet(self.parking_lane, idx));
+            spots.push(ParkingSpot::Onstreet(self.parking_lane, idx));
         }
         spots
     }

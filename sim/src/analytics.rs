@@ -1,4 +1,4 @@
-use crate::{CarID, Event, ParkingSpot, TripID, TripMode, TripPhaseType};
+use crate::{AlertLocation, CarID, Event, ParkingSpot, TripID, TripMode, TripPhaseType};
 use abstutil::Counter;
 use derivative::Derivative;
 use geom::{Distance, Duration, Histogram, Time};
@@ -16,8 +16,7 @@ pub struct Analytics {
     pub(crate) test_expectations: VecDeque<Event>,
     pub bus_arrivals: Vec<(Time, CarID, BusRouteID, BusStopID)>,
     pub bus_passengers_waiting: Vec<(Time, BusStopID, BusRouteID)>,
-    // TODO Scraping TripMode from TripPhaseStarting is frustrating.
-    pub started_trips: BTreeMap<TripID, (Time, TripMode)>,
+    pub started_trips: BTreeMap<TripID, Time>,
     // TODO Hack: No TripMode means aborted
     // Finish time, ID, mode (or None as aborted), trip duration
     pub finished_trips: Vec<(Time, TripID, Option<TripMode>, Duration)>,
@@ -26,7 +25,7 @@ pub struct Analytics {
     pub intersection_delays: BTreeMap<IntersectionID, Vec<(Time, Duration)>>,
     // Per parking lane, when does a spot become filled (true) or free (false)
     parking_spot_changes: BTreeMap<LaneID, Vec<(Time, bool)>>,
-    pub(crate) alerts: Vec<(Time, IntersectionID, String)>,
+    pub(crate) alerts: Vec<(Time, AlertLocation, String)>,
 
     // After we restore from a savestate, don't record anything. This is only going to make sense
     // if savestates are only used for quickly previewing against prebaked results, where we have
@@ -117,23 +116,15 @@ impl Analytics {
         }
 
         // Bus passengers
-        if let Event::TripPhaseStarting(_, _, _, _, ref tpt) = ev {
+        if let Event::TripPhaseStarting(_, _, _, ref tpt) = ev {
             if let TripPhaseType::WaitingForBus(route, stop) = tpt {
                 self.bus_passengers_waiting.push((time, *stop, *route));
             }
         }
 
         // Started trips
-        if let Event::TripPhaseStarting(id, _, mode, _, _) = ev {
-            // TODO More efficiently
-            if !self.started_trips.contains_key(&id)
-                && !self
-                    .finished_trips
-                    .iter()
-                    .any(|(_, trip, _, _)| *trip == id)
-            {
-                self.started_trips.insert(id, (time, mode));
-            }
+        if let Event::TripPhaseStarting(id, _, _, _) = ev {
+            self.started_trips.entry(id).or_insert(time);
         }
 
         // Finished trips
@@ -146,11 +137,9 @@ impl Analytics {
         {
             self.finished_trips
                 .push((time, trip, Some(mode), total_time));
-        } else if let Event::TripAborted(id, mode) = ev {
+        } else if let Event::TripAborted(id) = ev {
+            self.started_trips.entry(id).or_insert(time);
             self.finished_trips.push((time, id, None, Duration::ZERO));
-            if !self.started_trips.contains_key(&id) {
-                self.started_trips.insert(id, (time, mode));
-            }
         }
 
         // Intersection delays
@@ -181,10 +170,10 @@ impl Analytics {
 
         // TODO Kinda hacky, but these all consume the event, so kinda bundle em.
         match ev {
-            Event::TripPhaseStarting(id, _, _, maybe_req, phase_type) => {
+            Event::TripPhaseStarting(id, _, maybe_req, phase_type) => {
                 self.trip_log.push((time, id, maybe_req, phase_type));
             }
-            Event::TripAborted(id, _) => {
+            Event::TripAborted(id) => {
                 self.trip_log.push((time, id, None, TripPhaseType::Aborted));
             }
             Event::TripFinished { trip, .. } => {
@@ -194,8 +183,8 @@ impl Analytics {
             Event::PathAmended(path) => {
                 self.record_demand(&path, map);
             }
-            Event::Alert(i, msg) => {
-                self.alerts.push((time, i, msg));
+            Event::Alert(loc, msg) => {
+                self.alerts.push((time, loc, msg));
             }
             _ => {}
         }
@@ -213,44 +202,6 @@ impl Analytics {
 
     // TODO If these ever need to be speeded up, just cache the histogram and index in the events
     // list.
-
-    // Returns (all trips except aborted, number of aborted trips, trips by mode). For completed
-    // and ongoing trips as of now.
-    pub fn trip_times(
-        &self,
-        now: Time,
-    ) -> (
-        Histogram<Duration>,
-        usize,
-        BTreeMap<TripMode, Histogram<Duration>>,
-    ) {
-        let mut ongoing = self.started_trips.clone();
-        let mut per_mode = TripMode::all()
-            .into_iter()
-            .map(|m| (m, Histogram::new()))
-            .collect::<BTreeMap<_, _>>();
-        let mut all = Histogram::new();
-        let mut num_aborted = 0;
-        for (t, id, m, dt) in &self.finished_trips {
-            if *t > now {
-                break;
-            }
-            ongoing.remove(id);
-            if let Some(mode) = *m {
-                all.add(*dt);
-                per_mode.get_mut(&mode).unwrap().add(*dt);
-            } else {
-                num_aborted += 1;
-            }
-        }
-        for (_, (start, m)) in ongoing {
-            if start < now {
-                all.add(now - start);
-                per_mode.get_mut(&m).unwrap().add(now - start);
-            }
-        }
-        (all, num_aborted, per_mode)
-    }
 
     // Ignores the current time. Returns None for aborted trips.
     pub fn finished_trip_time(&self, trip: TripID) -> Option<Duration> {
@@ -295,39 +246,6 @@ impl Analytics {
             }
         }
         results
-    }
-
-    // Returns unsorted list of deltas, one for each trip finished or ongoing in both worlds.
-    // Positive dt means faster.
-    // TODO Now unused
-    pub fn trip_time_deltas(&self, now: Time, before: &Analytics) -> Vec<Duration> {
-        fn trip_times(a: &Analytics, now: Time) -> BTreeMap<TripID, Duration> {
-            let mut ongoing = a.started_trips.clone();
-            let mut trips = BTreeMap::new();
-            for (t, id, m, dt) in &a.finished_trips {
-                if *t > now {
-                    break;
-                }
-                ongoing.remove(id);
-                if m.is_some() {
-                    trips.insert(*id, *dt);
-                }
-            }
-            for (trip, (start, _)) in ongoing {
-                if start < now {
-                    trips.insert(trip, now - start);
-                }
-            }
-            trips
-        }
-
-        let a = trip_times(&self, now);
-        let b = trip_times(before, now);
-
-        // TODO Think through what missing (aborted) in one but not the other means
-        a.into_iter()
-            .filter_map(|(id, dt1)| b.get(&id).map(|dt2| *dt2 - dt1))
-            .collect()
     }
 
     pub fn bus_arrivals(
@@ -649,7 +567,7 @@ impl Analytics {
 
     pub fn active_agents(&self, now: Time) -> Vec<(Time, usize)> {
         let mut starts_stops: Vec<(Time, bool)> = Vec::new();
-        for (_, (t, _)) in &self.started_trips {
+        for t in self.started_trips.values() {
             if *t <= now {
                 starts_stops.push((*t, false));
             }

@@ -19,7 +19,21 @@ pub fn info(ctx: &mut EventCtx, app: &App, details: &mut Details, id: BuildingID
     }
 
     if let Some(ref p) = b.parking {
-        kv.push(("Parking", format!("{} spots via {}", p.num_stalls, p.name)));
+        let free = app.primary.sim.get_free_offstreet_spots(b.id).len();
+        if let Some(ref n) = p.public_garage_name {
+            kv.push((
+                "Parking",
+                format!(
+                    "{} / {} public spots available via {}",
+                    free, p.num_spots, n
+                ),
+            ));
+        } else {
+            kv.push((
+                "Parking",
+                format!("{} / {} private spots available", free, p.num_spots),
+            ));
+        }
     } else {
         kv.push(("Parking", "None".to_string()));
     }
@@ -35,11 +49,6 @@ pub fn info(ctx: &mut EventCtx, app: &App, details: &mut Details, id: BuildingID
         for (name, amenity) in &b.amenities {
             txt.add(Line(format!("- {} (a {})", name, amenity)));
         }
-    }
-
-    let cars = app.primary.sim.get_offstreet_parked_cars(id);
-    if !cars.is_empty() {
-        txt.add(Line(format!("{} cars parked inside right now", cars.len())));
     }
 
     if let Some(pl) = app
@@ -114,7 +123,7 @@ pub fn people(ctx: &mut EventCtx, app: &App, details: &mut Details, id: Building
                     break;
                 }
                 TripResult::TripDone | TripResult::TripAborted => {}
-                TripResult::TripDoesntExist => unreachable!(),
+                TripResult::TripDoesntExist | TripResult::RemoteTrip => unreachable!(),
             }
         }
 

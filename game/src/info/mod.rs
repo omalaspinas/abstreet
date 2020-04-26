@@ -21,7 +21,8 @@ use geom::{Circle, Distance, Duration, Time};
 use map_model::{AreaID, BuildingID, BusStopID, IntersectionID, LaneID};
 use maplit::btreemap;
 use sim::{
-    AgentID, Analytics, CarID, PedestrianID, PersonID, PersonState, TripID, TripMode, VehicleType,
+    AgentID, Analytics, CarID, ParkingSpot, PedestrianID, PersonID, PersonState, TripID, TripMode,
+    VehicleType,
 };
 use std::collections::{BTreeMap, HashMap};
 
@@ -42,6 +43,8 @@ pub struct InfoPanel {
     cached_actions: Vec<Key>,
 }
 
+// TODO We need a separate, weaker form of PartialEq for this to detect when we're on the "current"
+// tab.
 #[derive(Clone, PartialEq)]
 pub enum Tab {
     // What trips are open? For finished trips, show the timeline in the current simulation if
@@ -124,7 +127,12 @@ impl Tab {
             }
             Tab::BusStatus(c) | Tab::BusDelays(c) => Some(ID::Car(c)),
             Tab::BusStop(bs) => Some(ID::BusStop(bs)),
-            Tab::ParkedCar(c) => Some(ID::Car(c)),
+            // TODO If a parked car becomes in use while the panel is open, should update the panel
+            // better.
+            Tab::ParkedCar(c) => match app.primary.sim.lookup_parked_car(c)?.spot {
+                ParkingSpot::Onstreet(_, _) => Some(ID::Car(c)),
+                ParkingSpot::Offstreet(b, _) => Some(ID::Building(b)),
+            },
             Tab::BldgInfo(b) | Tab::BldgDebug(b) | Tab::BldgPeople(b) => Some(ID::Building(b)),
             Tab::Crowd(members) => Some(ID::PedCrowd(members)),
             Tab::Area(a) => Some(ID::Area(a)),
@@ -190,7 +198,10 @@ impl InfoPanel {
             Tab::BusStatus(c) => (bus::bus_status(ctx, app, &mut details, c), true),
             Tab::BusDelays(c) => (bus::bus_delays(ctx, app, &mut details, c), true),
             Tab::BusStop(bs) => (bus::stop(ctx, app, &mut details, bs), true),
-            Tab::ParkedCar(c) => (person::parked_car(ctx, app, &mut details, c), true),
+            Tab::ParkedCar(c) => (
+                person::parked_car(ctx, app, &mut details, c, ctx_actions.is_paused()),
+                true,
+            ),
             Tab::BldgInfo(b) => (building::info(ctx, app, &mut details, b), true),
             Tab::BldgDebug(b) => (building::debug(ctx, app, &mut details, b), false),
             Tab::BldgPeople(b) => (building::people(ctx, app, &mut details, b), false),
@@ -341,8 +352,17 @@ impl InfoPanel {
         match self.composite.event(ctx) {
             Some(Outcome::Clicked(action)) => {
                 if let Some(new_tab) = self.hyperlinks.get(&action).cloned() {
-                    // TODO restore if the tab was the same?
-                    *self = InfoPanel::new(ctx, app, new_tab, ctx_actions);
+                    let mut new = InfoPanel::new(ctx, app, new_tab, ctx_actions);
+                    // TODO Most cases use changed_settings, but one doesn't. Detect that
+                    // "sameness" here.
+                    if let (Tab::PersonTrips(p1, _), Tab::PersonTrips(p2, _)) =
+                        (&self.tab, &new.tab)
+                    {
+                        if p1 == p2 {
+                            new.composite.restore(ctx, &self.composite);
+                        }
+                    }
+                    *self = new;
                     return (false, None);
                 } else if action == "close info" {
                     (true, None)

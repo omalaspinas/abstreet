@@ -1,21 +1,25 @@
-use crate::{Scenario, Sim, SimOptions};
+use crate::{AlertHandler, Scenario, Sim, SimOptions};
 use abstutil::CmdArgs;
 use geom::Duration;
 use map_model::{Map, MapEdits};
 use rand::SeedableRng;
 use rand_xorshift::XorShiftRng;
 
+const RNG_SEED: u8 = 42;
+
 #[derive(Clone)]
 pub struct SimFlags {
     pub load: String,
     pub use_map_fixes: bool,
-    pub rng_seed: Option<u8>,
+    pub rng_seed: u8,
     pub opts: SimOptions,
 }
 
 impl SimFlags {
     pub fn from_args(args: &mut CmdArgs) -> SimFlags {
-        let rng_seed = args.optional_parse("--rng_seed", |s| s.parse());
+        let rng_seed = args
+            .optional_parse("--rng_seed", |s| s.parse())
+            .unwrap_or(RNG_SEED);
 
         SimFlags {
             load: args
@@ -33,14 +37,19 @@ impl SimFlags {
                 recalc_lanechanging: !args.enabled("--dont_recalc_lc"),
                 break_turn_conflict_cycles: args.enabled("--break_turn_conflict_cycles"),
                 enable_pandemic_model: if args.enabled("--pandemic") {
-                    if let Some(seed) = rng_seed {
-                        Some(XorShiftRng::from_seed([seed; 16]))
-                    } else {
-                        Some(XorShiftRng::from_entropy())
-                    }
+                    Some(XorShiftRng::from_seed([rng_seed; 16]))
                 } else {
                     None
                 },
+                alerts: args
+                    .optional("--alerts")
+                    .map(|x| match x.as_ref() {
+                        "print" => AlertHandler::Print,
+                        "block" => AlertHandler::Block,
+                        "silence" => AlertHandler::Silence,
+                        _ => panic!("Bad --alerts={}. Must be print|block|silence", x),
+                    })
+                    .unwrap_or(AlertHandler::Print),
             },
         }
     }
@@ -54,17 +63,13 @@ impl SimFlags {
         SimFlags {
             load: abstutil::path_map(map),
             use_map_fixes: true,
-            rng_seed: Some(42),
+            rng_seed: RNG_SEED,
             opts: SimOptions::new(run_name),
         }
     }
 
     pub fn make_rng(&self) -> XorShiftRng {
-        if let Some(seed) = self.rng_seed {
-            XorShiftRng::from_seed([seed; 16])
-        } else {
-            XorShiftRng::from_entropy()
-        }
+        XorShiftRng::from_seed([self.rng_seed; 16])
     }
 
     // Convenience method to setup everything.
