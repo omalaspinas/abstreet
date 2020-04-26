@@ -80,8 +80,7 @@ impl Analytics {
         let raw_thruput = true;
 
         // Throughput
-        if let Event::AgentEntersTraversable(a, _, to) = ev {
-            let mode = TripMode::from_agent(a);
+        if let Event::AgentEntersTraversable(_, mode, to) = ev {
             match to {
                 Traversable::Lane(l) => {
                     let r = map.get_l(l).parent;

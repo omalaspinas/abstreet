@@ -3,7 +3,7 @@ use crate::mechanics::Queue;
 use crate::{
     ActionAtEnd, AgentID, AgentProperties, CarID, Command, CreateCar, DistanceInterval,
     DrawCarInput, Event, IntersectionSimState, ParkedCar, ParkingSimState, PersonID, Scheduler,
-    TimeInterval, TransitSimState, TripManager, TripPositions, UnzoomedAgent, Vehicle,
+    TimeInterval, TransitSimState, TripManager, TripMode, TripPositions, UnzoomedAgent, Vehicle,
     WalkingSimState, FOLLOWING_DISTANCE,
 };
 use abstutil::{deserialize_btreemap, serialize_btreemap};
@@ -367,16 +367,16 @@ impl DrivingSimState {
                     &mut self.events,
                 );
                 self.events.push(Event::AgentLeavesTraversable(
-                    AgentID::Car(car.vehicle.id),
                     car.vehicle.owner,
+                    TripMode::from_agent(AgentID::Car(car.vehicle.id)),
                     from,
                 ));
                 car.total_blocked_time += now - blocked_since;
                 car.state = car.crossing_state(Distance::ZERO, now, map);
                 scheduler.push(car.state.get_end_time(), Command::UpdateCar(car.vehicle.id));
                 self.events.push(Event::AgentEntersTraversable(
-                    AgentID::Car(car.vehicle.id),
                     car.vehicle.owner,
+                    TripMode::from_agent(AgentID::Car(car.vehicle.id)),
                     goto,
                 ));
 

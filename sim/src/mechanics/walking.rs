@@ -2,7 +2,7 @@ use crate::{
     AgentID, AgentProperties, Command, CreatePedestrian, DistanceInterval, DrawPedCrowdInput,
     DrawPedestrianInput, Event, IntersectionSimState, ParkingSimState, ParkingSpot,
     PedCrowdLocation, PedestrianID, PersonID, Scheduler, SidewalkPOI, SidewalkSpot, TimeInterval,
-    TransitSimState, TripID, TripManager, TripPositions, UnzoomedAgent,
+    TransitSimState, TripID, TripManager, TripMode, TripPositions, UnzoomedAgent,
 };
 use abstutil::{deserialize_multimap, serialize_multimap, MultiMap};
 use geom::{Distance, Duration, Line, PolyLine, Speed, Time};
@@ -617,8 +617,8 @@ impl Pedestrian {
 
         peds_per_traversable.remove(self.path.current_step().as_traversable(), self.id);
         events.push(Event::AgentLeavesTraversable(
-            AgentID::Pedestrian(self.id),
             Some(self.person),
+            TripMode::from_agent(AgentID::Pedestrian(self.id)),
             self.path.current_step().as_traversable(),
         ));
         self.path.shift(map);
@@ -630,8 +630,8 @@ impl Pedestrian {
         self.state = self.crossing_state(start_dist, now, map);
         peds_per_traversable.insert(self.path.current_step().as_traversable(), self.id);
         events.push(Event::AgentEntersTraversable(
-            AgentID::Pedestrian(self.id),
             Some(self.person),
+            TripMode::from_agent(AgentID::Pedestrian(self.id)),
             self.path.current_step().as_traversable(),
         ));
         true

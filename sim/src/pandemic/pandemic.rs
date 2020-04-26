@@ -207,7 +207,7 @@ impl PandemicModel {
         assert!(self.initialized);
 
         match ev {
-            Event::AgentEntersTraversable(_, person, t) => {
+            Event::AgentEntersTraversable(person, _, t) => {
                 if let Some(p) = person {
                     match *t {
                         Traversable::Lane(lid) => self.sidewalks.person_enters_space(now, *p, lid),
@@ -215,7 +215,7 @@ impl PandemicModel {
                     }
                 }
             }
-            Event::AgentLeavesTraversable(_, person, t) => {
+            Event::AgentLeavesTraversable(person, _, t) => {
                 if let Some(p) = person {
                     match *t {
                         Traversable::Lane(lid) => {
