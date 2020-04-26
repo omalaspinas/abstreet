@@ -10,6 +10,7 @@ use ezgui::{
 };
 use geom::{Duration, PolyLine, Polygon, Pt2D, Time};
 use instant::Instant;
+use sim::AlertLocation;
 
 pub struct SpeedControls {
     pub composite: Composite,
@@ -274,27 +275,28 @@ impl SpeedControls {
         if !alerts.is_empty() {
             self.pause(ctx, app);
 
-            // Just go to the first one, but print all messages
-            let id = ID::Intersection(alerts[0].1);
-            return Some(Transition::PushTwice(
-                msg(
-                    "Alerts",
-                    alerts
-                        .into_iter()
-                        .map(|(_, _, msg)| {
-                            println!("Alert: {}", msg);
-                            msg
-                        })
-                        .collect(),
-                ),
-                Warping::new(
-                    ctx,
-                    id.canonical_point(&app.primary).unwrap(),
-                    Some(10.0),
-                    None,
-                    &mut app.primary,
-                ),
-            ));
+            let popup = msg("Alerts", alerts.iter().map(|(_, _, msg)| msg).collect());
+            if let Some(id) = match alerts[0].1 {
+                AlertLocation::Nil => None,
+                AlertLocation::Intersection(i) => Some(ID::Intersection(i)),
+                // TODO Open info panel and warp to them
+                AlertLocation::Person(_) => None,
+                AlertLocation::Building(b) => Some(ID::Building(b)),
+            } {
+                // Just go to the first one, but print all messages
+                return Some(Transition::PushTwice(
+                    popup,
+                    Warping::new(
+                        ctx,
+                        id.canonical_point(&app.primary).unwrap(),
+                        Some(10.0),
+                        None,
+                        &mut app.primary,
+                    ),
+                ));
+            } else {
+                return Some(Transition::Push(popup));
+            }
         }
 
         None
@@ -517,9 +519,13 @@ impl State for TimeWarpScreen {
                 ));
             }
             // TODO secondary for a/b test mode
-            // For now, don't stop for this
-            for (t, i, msg) in app.primary.sim.clear_alerts() {
-                println!("- Alert: At {}, near {}, {}", t, i, msg);
+
+            for (t, maybe_i, alert) in app.primary.sim.clear_alerts() {
+                // TODO Just the first :(
+                return Transition::Replace(msg(
+                    "Alert",
+                    vec![format!("At {}, near {:?}, {}", t, maybe_i, alert)],
+                ));
             }
 
             // I'm covered in shame for not doing this from the start.

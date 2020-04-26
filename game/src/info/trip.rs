@@ -6,7 +6,7 @@ use ezgui::{
     Btn, Color, EventCtx, GeomBatch, Line, LinePlot, PlotOptions, RewriteColor, Series, Text,
     TextExt, Widget,
 };
-use geom::{Angle, Distance, Duration, Polygon, Pt2D, Time};
+use geom::{Angle, Distance, Duration, PolyLine, Polygon, Pt2D, Time};
 use map_model::{Map, Path, PathStep};
 use sim::{AgentID, PersonID, TripEndpoint, TripID, TripPhase, TripPhaseType, VehicleType};
 use std::collections::BTreeMap;
@@ -281,6 +281,19 @@ fn make_timeline(
         details
             .warpers
             .insert(format!("jump to start of {}", trip), id);
+        if let TripEndpoint::Border(_, ref loc) = trip_start {
+            if let Some(loc) = loc {
+                let arrow = PolyLine::new(vec![
+                    Pt2D::forcibly_from_gps(loc.gps, map.get_gps_bounds()),
+                    center,
+                ])
+                .make_arrow(Distance::meters(5.0))
+                .unwrap();
+                details.unzoomed.push(Color::GREEN, arrow.clone());
+                details.zoomed.push(Color::GREEN, arrow.clone());
+            }
+        }
+
         details.unzoomed.add_svg(
             ctx.prerender,
             "../data/system/assets/timeline/start_pos.svg",
@@ -297,6 +310,7 @@ fn make_timeline(
             Angle::ZERO,
             RewriteColor::NoOp,
         );
+
         Btn::svg(
             "../data/system/assets/timeline/start_pos.svg",
             RewriteColor::Change(Color::WHITE, app.cs.hovering),
@@ -310,6 +324,19 @@ fn make_timeline(
         details
             .warpers
             .insert(format!("jump to goal of {}", trip), id);
+        if let TripEndpoint::Border(_, ref loc) = trip_end {
+            if let Some(loc) = loc {
+                let arrow = PolyLine::new(vec![
+                    center,
+                    Pt2D::forcibly_from_gps(loc.gps, map.get_gps_bounds()),
+                ])
+                .make_arrow(Distance::meters(5.0))
+                .unwrap();
+                details.unzoomed.push(Color::GREEN, arrow.clone());
+                details.zoomed.push(Color::GREEN, arrow.clone());
+            }
+        }
+
         details.unzoomed.add_svg(
             ctx.prerender,
             "../data/system/assets/timeline/goal_pos.svg",
@@ -326,6 +353,7 @@ fn make_timeline(
             Angle::ZERO,
             RewriteColor::NoOp,
         );
+
         Btn::svg(
             "../data/system/assets/timeline/goal_pos.svg",
             RewriteColor::Change(Color::WHITE, app.cs.hovering),
@@ -350,6 +378,7 @@ fn make_timeline(
             TripPhaseType::RidingBus(_, _, _) => app.cs.bus_lane,
             TripPhaseType::Aborted | TripPhaseType::Finished => unreachable!(),
             TripPhaseType::DelayedStart => Color::YELLOW,
+            TripPhaseType::Remote => Color::PINK,
         }
         .alpha(0.7);
 
@@ -412,6 +441,8 @@ fn make_timeline(
                 }
                 TripPhaseType::Aborted | TripPhaseType::Finished => unreachable!(),
                 TripPhaseType::DelayedStart => "../data/system/assets/timeline/delayed_start.svg",
+                // TODO What icon should represent this?
+                TripPhaseType::Remote => "../data/system/assets/timeline/delayed_start.svg",
             },
             // TODO Hardcoded layouting...
             Pt2D::new(0.5 * phase_width, -20.0),
@@ -571,9 +602,13 @@ fn endpoint(endpt: &TripEndpoint, map: &Map) -> (ID, Pt2D, String) {
             let bldg = map.get_b(*b);
             (ID::Building(*b), bldg.label_center, bldg.just_address(map))
         }
-        TripEndpoint::Border(i) => {
+        TripEndpoint::Border(i, _) => {
             let i = map.get_i(*i);
-            (ID::Intersection(i.id), i.polygon.center(), i.name(map))
+            (
+                ID::Intersection(i.id),
+                i.polygon.center(),
+                format!("off map, via {}", i.name(map)),
+            )
         }
     }
 }

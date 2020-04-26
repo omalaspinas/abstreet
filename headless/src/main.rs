@@ -15,7 +15,7 @@ fn main() {
     args.done();
 
     let mut sim_flags = SimFlags::synthetic_test("montlake", "pandemic");
-    sim_flags.opts.enable_pandemic_model = Some(XorShiftRng::from_seed([42; 16]));
+    sim_flags.opts.enable_pandemic_model = Some(XorShiftRng::from_seed([sim_flags.rng_seed; 16]));
     let mut timer = Timer::new("setup headless");
     let (map, mut sim, mut rng) = sim_flags.load(&mut timer);
 
@@ -23,9 +23,8 @@ fn main() {
         abstutil::path_scenario(map.get_name(), "weekday"),
         &mut timer,
     );
-    // TODO Hack: avoid leaking parking spots
     base_scenario
-        .repeat_days(num_days, true)
+        .repeat_days(num_days)
         .instantiate(&mut sim, &map, &mut rng, &mut timer);
     timer.done();
 
