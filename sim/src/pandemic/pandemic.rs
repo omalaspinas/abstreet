@@ -1,7 +1,10 @@
 use crate::pandemic::{AnyTime, State};
-use crate::{CarID, Command, Event, OffMapLocation, Grid, Person, PersonID, Scheduler, TripPhaseType, WalkingSimState,};
+use crate::{
+    CarID, Command, Event, Grid, OffMapLocation, Person, PersonID, Scheduler, TripPhaseType,
+    WalkingSimState,
+};
 use geom::{Bounds, Distance, Duration, Pt2D, Time};
-use map_model::{Traversable, LaneID, BuildingID, BusStopID, Map};
+use map_model::{BuildingID, BusStopID, LaneID, Map, Traversable};
 use rand::Rng;
 use rand_xorshift::XorShiftRng;
 use serde_derive::{Deserialize, Serialize};
@@ -45,7 +48,9 @@ impl From<(State, PersonID)> for Cmd {
     fn from(s: (State, PersonID)) -> Cmd {
         match s {
             (State::Sane(_), p) => Cmd::Transmission(p),
-            (State::Exposed(_), p) | (State::Infectious(_), p) | (State::Hospitalized(_), p) => Cmd::Transition(p),
+            (State::Exposed(_), p) | (State::Infectious(_), p) | (State::Hospitalized(_), p) => {
+                Cmd::Transition(p)
+            }
             (State::Dead(_), _) | (State::Recovered(_), _) => unreachable!(),
         }
     }
@@ -211,7 +216,7 @@ impl PandemicModel {
                 if let Some(p) = person {
                     match *t {
                         Traversable::Lane(lid) => self.sidewalks.person_enters_space(now, *p, lid),
-                        _ => ()
+                        _ => (),
                     }
                 }
             }
@@ -224,8 +229,8 @@ impl PandemicModel {
                             } else {
                                 panic!("{} left {}, but they weren't inside", p, *t);
                             }
-                        },
-                        _ => ()
+                        }
+                        _ => (),
                     }
                 }
             }
@@ -278,8 +283,7 @@ impl PandemicModel {
                             self.transmission(now, person, others, scheduler);
                         }
                     }
-                    _ => {
-                    }
+                    _ => {}
                 }
             }
             Event::PersonLeavesMap(_person, _, loc) => {
@@ -422,10 +426,10 @@ impl PandemicModel {
                     );
                 }
                 scheduler.push(now + self.delta_t, Command::Pandemic(Cmd::Poll));
-            },
+            }
             Cmd::Transition(person) => {
                 self.transition(now, person, scheduler);
-            },
+            }
             Cmd::Transmission(_) => {
                 // TODO don't know if something can happen here.
                 unreachable!()

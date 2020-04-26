@@ -130,7 +130,12 @@ impl Sim {
             transit: TransitSimState::new(),
             trips: TripManager::new(),
             pandemic: if let Some(rng) = opts.enable_pandemic_model {
-                Some(PandemicModel::new(map.get_bounds(), Distance::meters(1.0), Duration::seconds(10.0), rng))
+                Some(PandemicModel::new(
+                    map.get_bounds(),
+                    Distance::meters(1.0),
+                    Duration::seconds(10.0),
+                    rng,
+                ))
             } else {
                 None
             },
@@ -521,7 +526,7 @@ impl Sim {
                         }
 
                         self.walking
-                            .spawn_ped(self.time, create_ped, map, &mut self.scheduler);
+                            .spawn_ped(self.time, create_ped, map, &mut events, &mut self.scheduler);
                     }
                 }
             }
@@ -569,10 +574,13 @@ impl Sim {
                 savestate = true;
             }
             Command::Pandemic(cmd) => {
-                self.pandemic
-                    .as_mut()
-                    .unwrap()
-                    .handle_cmd(self.time, cmd, &self.walking, map, &mut self.scheduler);
+                self.pandemic.as_mut().unwrap().handle_cmd(
+                    self.time,
+                    cmd,
+                    &self.walking,
+                    map,
+                    &mut self.scheduler,
+                );
             }
             Command::FinishRemoteTrip(trip) => {
                 self.trips.remote_trip_finished(

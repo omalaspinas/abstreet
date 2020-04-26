@@ -39,6 +39,7 @@ impl WalkingSimState {
         now: Time,
         params: CreatePedestrian,
         map: &Map,
+        events: &mut Vec<Event>,
         scheduler: &mut Scheduler,
     ) {
         let start_lane = params.start.sidewalk_pos.lane();
@@ -87,6 +88,12 @@ impl WalkingSimState {
             Traversable::Lane(params.start.sidewalk_pos.lane()),
             params.id,
         );
+
+        events.push(Event::AgentEntersTraversable(
+            Some(params.person),
+            TripMode::from_agent(AgentID::Pedestrian(params.id)),
+            Traversable::Lane(params.start.sidewalk_pos.lane()),
+        ));
     }
 
     pub fn get_draw_ped(
@@ -133,6 +140,11 @@ impl WalkingSimState {
                                 parking,
                                 scheduler,
                             );
+                            self.events.push(Event::AgentLeavesTraversable(
+                                Some(ped.person),
+                                TripMode::from_agent(AgentID::Pedestrian(ped.id)),
+                                ped.path.current_step().as_traversable(),
+                            ));
                             self.peds.remove(&id);
                         }
                         SidewalkPOI::Building(b) => {
@@ -144,6 +156,12 @@ impl WalkingSimState {
                                 ),
                             );
                             scheduler.push(ped.state.get_end_time(), Command::UpdatePed(ped.id));
+                            // TODO check if really leaves traversable here
+                            self.events.push(Event::AgentLeavesTraversable(
+                                Some(ped.person),
+                                TripMode::from_agent(AgentID::Pedestrian(ped.id)),
+                                ped.path.current_step().as_traversable(),
+                            ));
                         }
                         SidewalkPOI::BusStop(stop) => {
                             if let Some(route) = trips.ped_reached_bus_stop(
@@ -158,6 +176,11 @@ impl WalkingSimState {
                             } else {
                                 self.peds_per_traversable
                                     .remove(ped.path.current_step().as_traversable(), ped.id);
+                                self.events.push(Event::AgentLeavesTraversable(
+                                    Some(ped.person),
+                                    TripMode::from_agent(AgentID::Pedestrian(ped.id)),
+                                    ped.path.current_step().as_traversable(),
+                                ));
                                 self.peds.remove(&id);
                             }
                         }
@@ -173,6 +196,11 @@ impl WalkingSimState {
                                 parking,
                                 scheduler,
                             );
+                            self.events.push(Event::AgentLeavesTraversable(
+                                Some(ped.person),
+                                TripMode::from_agent(AgentID::Pedestrian(ped.id)),
+                                ped.path.current_step().as_traversable(),
+                            ));
                             self.peds.remove(&id);
                         }
                         SidewalkPOI::BikeRack(driving_pos) => {
@@ -184,6 +212,12 @@ impl WalkingSimState {
                                 TimeInterval::new(now, now + TIME_TO_START_BIKING),
                             );
                             scheduler.push(ped.state.get_end_time(), Command::UpdatePed(ped.id));
+                            // TODO check if really leaves traversable here
+                            self.events.push(Event::AgentLeavesTraversable(
+                                Some(ped.person),
+                                TripMode::from_agent(AgentID::Pedestrian(ped.id)),
+                                ped.path.current_step().as_traversable(),
+                            ));
                         }
                         SidewalkPOI::SuddenlyAppear => unreachable!(),
                         SidewalkPOI::DeferredParkingSpot => unreachable!(),
@@ -232,6 +266,12 @@ impl WalkingSimState {
                 ped.state =
                     ped.crossing_state(map.get_b(b).front_path.sidewalk.dist_along(), now, map);
                 scheduler.push(ped.state.get_end_time(), Command::UpdatePed(ped.id));
+
+                self.events.push(Event::AgentEntersTraversable(
+                    Some(ped.person),
+                    TripMode::from_agent(AgentID::Pedestrian(ped.id)),
+                    Traversable::Lane(map.get_b(b).front_path.sidewalk.lane()),
+                ));
             }
             PedState::EnteringBuilding(bldg, _) => {
                 self.peds_per_traversable
@@ -245,6 +285,11 @@ impl WalkingSimState {
                     parking,
                     scheduler,
                 );
+                self.events.push(Event::AgentLeavesTraversable(
+                    Some(ped.person),
+                    TripMode::from_agent(AgentID::Pedestrian(ped.id)),
+                    ped.path.current_step().as_traversable(),
+                ));
                 self.peds.remove(&id);
             }
             PedState::StartingToBike(ref spot, _, _) => {
@@ -259,9 +304,19 @@ impl WalkingSimState {
                     parking,
                     scheduler,
                 );
+                self.events.push(Event::AgentLeavesTraversable(
+                    Some(ped.person),
+                    TripMode::from_agent(AgentID::Pedestrian(ped.id)),
+                    ped.path.current_step().as_traversable(),
+                ));
                 self.peds.remove(&id);
             }
             PedState::FinishingBiking(ref spot, _, _) => {
+                self.events.push(Event::AgentEntersTraversable(
+                    Some(ped.person),
+                    TripMode::from_agent(AgentID::Pedestrian(ped.id)),
+                    Traversable::Lane(spot.sidewalk_pos.lane()),
+                ));
                 ped.state = ped.crossing_state(spot.sidewalk_pos.dist_along(), now, map);
                 scheduler.push(ped.state.get_end_time(), Command::UpdatePed(ped.id));
             }

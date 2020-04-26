@@ -3,8 +3,8 @@ use crate::mechanics::Queue;
 use crate::{
     ActionAtEnd, AgentID, AgentProperties, AlertLocation, CarID, Command, CreateCar,
     DistanceInterval, DrawCarInput, Event, IntersectionSimState, ParkedCar, ParkingSimState,
-    PersonID, Scheduler, TimeInterval, TransitSimState, TripMode, TripManager, TripPositions, UnzoomedAgent,
-    Vehicle, WalkingSimState, FOLLOWING_DISTANCE,
+    PersonID, Scheduler, TimeInterval, TransitSimState, TripManager, TripMode, TripPositions,
+    UnzoomedAgent, Vehicle, WalkingSimState, FOLLOWING_DISTANCE,
 };
 use abstutil::{deserialize_btreemap, serialize_btreemap};
 use geom::{Distance, Duration, PolyLine, Time};
