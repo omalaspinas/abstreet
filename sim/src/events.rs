@@ -25,7 +25,8 @@ pub enum Event {
 
     BikeStoppedAtSidewalk(CarID, LaneID),
 
-    AgentEntersTraversable(AgentID, Traversable),
+    AgentEntersTraversable(AgentID, Option<PersonID>, Traversable),
+    AgentLeavesTraversable(AgentID, Option<PersonID>, Traversable),
     IntersectionDelayMeasured(IntersectionID, Duration),
 
     TripFinished {

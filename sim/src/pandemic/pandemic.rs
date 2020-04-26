@@ -3,7 +3,7 @@ use crate::{
     CarID, Command, Event, Grid, Person, PersonID, Scheduler, TripPhaseType, WalkingSimState,
 };
 use geom::{Bounds, Distance, Duration, Pt2D, Time};
-use map_model::{BuildingID, BusStopID, Map};
+use map_model::{Traversable, LaneID, BuildingID, BusStopID, Map};
 use rand::Rng;
 use rand_xorshift::XorShiftRng;
 use serde_derive::{Deserialize, Serialize};
@@ -21,6 +21,7 @@ pub struct PandemicModel {
     delta_t: Duration,
 
     bldgs: SharedSpace<BuildingID>,
+    sidewalks: SharedSpace<LaneID>,
     bus_stops: SharedSpace<BusStopID>,
     buses: SharedSpace<CarID>,
     person_to_bus: BTreeMap<PersonID, CarID>,
@@ -77,6 +78,7 @@ impl PandemicModel {
             delta_t: delta_t,
 
             bldgs: SharedSpace::new(),
+            sidewalks: SharedSpace::new(),
             bus_stops: SharedSpace::new(),
             buses: SharedSpace::new(),
             person_to_bus: BTreeMap::new(),
@@ -205,6 +207,28 @@ impl PandemicModel {
         assert!(self.initialized);
 
         match ev {
+            Event::AgentEntersTraversable(_, person, t) => {
+                if let Some(p) = person {
+                    match *t {
+                        Traversable::Lane(lid) => self.sidewalks.person_enters_space(now, *p, lid),
+                        _ => ()
+                    }
+                }
+            }
+            Event::AgentLeavesTraversable(_, person, t) => {
+                if let Some(p) = person {
+                    match *t {
+                        Traversable::Lane(lid) => {
+                            if let Some(others) = self.sidewalks.person_leaves_space(now, *p, lid) {
+                                self.transmission(now, *p, others, scheduler);
+                            } else {
+                                panic!("{} left {}, but they weren't inside", p, *t);
+                            }
+                        },
+                        _ => ()
+                    }
+                }
+            }
             Event::PersonEntersBuilding(person, bldg) => {
                 self.bldgs.person_enters_space(now, *person, *bldg);
             }

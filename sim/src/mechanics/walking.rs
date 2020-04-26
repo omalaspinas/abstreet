@@ -616,6 +616,11 @@ impl Pedestrian {
         }
 
         peds_per_traversable.remove(self.path.current_step().as_traversable(), self.id);
+        events.push(Event::AgentLeavesTraversable(
+            AgentID::Pedestrian(self.id),
+            Some(self.person),
+            self.path.current_step().as_traversable(),
+        ));
         self.path.shift(map);
         let start_dist = match self.path.current_step() {
             PathStep::Lane(_) => Distance::ZERO,
@@ -626,6 +631,7 @@ impl Pedestrian {
         peds_per_traversable.insert(self.path.current_step().as_traversable(), self.id);
         events.push(Event::AgentEntersTraversable(
             AgentID::Pedestrian(self.id),
+            Some(self.person),
             self.path.current_step().as_traversable(),
         ));
         true

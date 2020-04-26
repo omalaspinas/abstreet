@@ -366,11 +366,17 @@ impl DrivingSimState {
                     car.trip_and_person,
                     &mut self.events,
                 );
+                self.events.push(Event::AgentLeavesTraversable(
+                    AgentID::Car(car.vehicle.id),
+                    car.vehicle.owner,
+                    from,
+                ));
                 car.total_blocked_time += now - blocked_since;
                 car.state = car.crossing_state(Distance::ZERO, now, map);
                 scheduler.push(car.state.get_end_time(), Command::UpdateCar(car.vehicle.id));
                 self.events.push(Event::AgentEntersTraversable(
                     AgentID::Car(car.vehicle.id),
+                    car.vehicle.owner,
                     goto,
                 ));
 
