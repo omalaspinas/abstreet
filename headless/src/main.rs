@@ -1,4 +1,4 @@
-use abstutil::{prettyprint_usize, CmdArgs, Timer};
+use abstutil::{CmdArgs, Timer};
 use map_model::Map;
 use rand::SeedableRng;
 use rand_xorshift::XorShiftRng;
