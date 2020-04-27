@@ -79,6 +79,14 @@ impl WalkingSimState {
                 Line::new(driving_pos.pt(map), params.start.sidewalk_pos.pt(map)),
                 TimeInterval::new(now, now + TIME_TO_FINISH_BIKING),
             ),
+            SidewalkPOI::Border(_, _) | SidewalkPOI::SuddenlyAppear | SidewalkPOI::BusStop(_) | SidewalkPOI::ParkingSpot(ParkingSpot::Onstreet(_, _)) => {
+                events.push(Event::AgentEntersTraversable(
+                    Some(params.person),
+                    TripMode::from_agent(AgentID::Pedestrian(params.id)),
+                    Traversable::Lane(params.start.sidewalk_pos.lane()),
+                ));
+                ped.crossing_state(params.start.sidewalk_pos.dist_along(), now, map)
+            },
             _ => ped.crossing_state(params.start.sidewalk_pos.dist_along(), now, map),
         };
 
@@ -88,12 +96,6 @@ impl WalkingSimState {
             Traversable::Lane(params.start.sidewalk_pos.lane()),
             params.id,
         );
-
-        // events.push(Event::AgentEntersTraversable(
-        //     Some(params.person),
-        //     TripMode::from_agent(AgentID::Pedestrian(params.id)),
-        //     Traversable::Lane(params.start.sidewalk_pos.lane()),
-        // ));
     }
 
     pub fn get_draw_ped(
@@ -156,12 +158,6 @@ impl WalkingSimState {
                                 ),
                             );
                             scheduler.push(ped.state.get_end_time(), Command::UpdatePed(ped.id));
-                            // TODO check if really leaves traversable here
-                            self.events.push(Event::AgentLeavesTraversable(
-                                Some(ped.person),
-                                TripMode::from_agent(AgentID::Pedestrian(ped.id)),
-                                ped.path.current_step().as_traversable(),
-                            ));
                         }
                         SidewalkPOI::BusStop(stop) => {
                             if let Some(route) = trips.ped_reached_bus_stop(
@@ -212,12 +208,6 @@ impl WalkingSimState {
                                 TimeInterval::new(now, now + TIME_TO_START_BIKING),
                             );
                             scheduler.push(ped.state.get_end_time(), Command::UpdatePed(ped.id));
-                            // TODO check if really leaves traversable here
-                            self.events.push(Event::AgentLeavesTraversable(
-                                Some(ped.person),
-                                TripMode::from_agent(AgentID::Pedestrian(ped.id)),
-                                ped.path.current_step().as_traversable(),
-                            ));
                         }
                         SidewalkPOI::SuddenlyAppear => unreachable!(),
                         SidewalkPOI::DeferredParkingSpot => unreachable!(),
