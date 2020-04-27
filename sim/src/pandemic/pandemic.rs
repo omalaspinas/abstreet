@@ -1,6 +1,6 @@
 use crate::pandemic::{AnyTime, State};
 use crate::{
-    CarID, Command, Event, Grid, OffMapLocation, Person, PersonID, Scheduler, TripPhaseType,
+    CarID, Command, Event, Grid, OffMapLocation, Person, PersonID, Scheduler, TripPhaseType, TripMode,
     WalkingSimState,
 };
 use geom::{Bounds, Distance, Duration, Pt2D, Time};
@@ -220,19 +220,24 @@ impl PandemicModel {
                     }
                 }
             }
-            Event::AgentLeavesTraversable(person, _, t) => {
-                if let Some(p) = person {
-                    match *t {
-                        Traversable::Lane(lid) => {
-                            if let Some(others) = self.sidewalks.person_leaves_space(now, *p, lid) {
-                                self.transmission(now, *p, others, scheduler);
-                            } else {
-                                panic!("{} left {}, but they weren't inside", p, *t);
+            Event::AgentLeavesTraversable(person, tm, t) => {
+                match *tm {
+                    TripMode::Walk => 
+                        if let Some(p) = person {
+                            match *t {
+                                Traversable::Lane(lid) => {
+                                    if let Some(others) = self.sidewalks.person_leaves_space(now, *p, lid) {
+                                        self.transmission(now, *p, others, scheduler);
+                                    } else {
+                                        panic!("{} left {}, but they weren't inside", p, *t);
+                                    }
+                                }
+                                _ => (),
                             }
-                        }
-                        _ => (),
-                    }
+                        },
+                    _ => (),
                 }
+
             }
             Event::PersonEntersBuilding(person, bldg) => {
                 self.bldgs.person_enters_space(now, *person, *bldg);
