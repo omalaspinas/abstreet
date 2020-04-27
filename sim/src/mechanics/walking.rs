@@ -89,11 +89,11 @@ impl WalkingSimState {
             params.id,
         );
 
-        events.push(Event::AgentEntersTraversable(
-            Some(params.person),
-            TripMode::from_agent(AgentID::Pedestrian(params.id)),
-            Traversable::Lane(params.start.sidewalk_pos.lane()),
-        ));
+        // events.push(Event::AgentEntersTraversable(
+        //     Some(params.person),
+        //     TripMode::from_agent(AgentID::Pedestrian(params.id)),
+        //     Traversable::Lane(params.start.sidewalk_pos.lane()),
+        // ));
     }
 
     pub fn get_draw_ped(
@@ -267,6 +267,7 @@ impl WalkingSimState {
                     ped.crossing_state(map.get_b(b).front_path.sidewalk.dist_along(), now, map);
                 scheduler.push(ped.state.get_end_time(), Command::UpdatePed(ped.id));
 
+                
                 self.events.push(Event::AgentEntersTraversable(
                     Some(ped.person),
                     TripMode::from_agent(AgentID::Pedestrian(ped.id)),
