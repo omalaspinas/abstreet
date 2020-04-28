@@ -1,13 +1,16 @@
-use crate::{CarID, CarStatus, DrawCarInput, ParkedCar, ParkingSpot, PersonID, Vehicle};
+use crate::{CarID, CarStatus, DrawCarInput, Event, ParkedCar, ParkingSpot, PersonID, Vehicle};
 use abstutil::{
     deserialize_btreemap, deserialize_multimap, serialize_btreemap, serialize_multimap, MultiMap,
     Timer,
 };
 use geom::{Distance, Pt2D};
 use map_model;
-use map_model::{BuildingID, Lane, LaneID, LaneType, Map, Position, Traversable};
+use map_model::{
+    BuildingID, Lane, LaneID, LaneType, Map, PathConstraints, PathStep, Position, Traversable,
+    TurnID,
+};
 use serde_derive::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 
 #[derive(Serialize, Deserialize, PartialEq, Clone)]
 pub struct ParkingSimState {
@@ -22,13 +25,6 @@ pub struct ParkingSimState {
     )]
     occupants: BTreeMap<ParkingSpot, CarID>,
     reserved_spots: BTreeSet<ParkingSpot>,
-    // TODO I think we can almost get rid of this
-    dynamically_reserved_cars: BTreeSet<CarID>,
-    #[serde(
-        serialize_with = "serialize_btreemap",
-        deserialize_with = "deserialize_btreemap"
-    )]
-    owner_to_car: BTreeMap<PersonID, CarID>,
 
     // On-street specific
     onstreet_lanes: BTreeMap<LaneID, ParkingLane>,
@@ -46,6 +42,8 @@ pub struct ParkingSimState {
         deserialize_with = "deserialize_multimap"
     )]
     driving_to_offstreet: MultiMap<LaneID, BuildingID>,
+
+    events: Vec<Event>,
 }
 
 impl ParkingSimState {
@@ -55,14 +53,14 @@ impl ParkingSimState {
         let mut sim = ParkingSimState {
             parked_cars: BTreeMap::new(),
             occupants: BTreeMap::new(),
-            dynamically_reserved_cars: BTreeSet::new(),
             reserved_spots: BTreeSet::new(),
-            owner_to_car: BTreeMap::new(),
 
             onstreet_lanes: BTreeMap::new(),
             driving_to_parking_lanes: MultiMap::new(),
             num_spots_per_offstreet: BTreeMap::new(),
             driving_to_offstreet: MultiMap::new(),
+
+            events: Vec::new(),
         };
         for l in map.all_lanes() {
             if let Some(lane) = ParkingLane::new(l, map, timer) {
@@ -72,17 +70,16 @@ impl ParkingSimState {
         }
         for b in map.all_buildings() {
             if let Some(ref p) = b.parking {
-                if map.get_l(p.driving_pos.lane()).parking_blackhole.is_some() {
-                    continue;
-                }
-                sim.num_spots_per_offstreet.insert(b.id, p.num_stalls);
+                // Map construction is supposed to enforce this
+                assert!(map.get_l(p.driving_pos.lane()).parking_blackhole.is_none());
+                sim.num_spots_per_offstreet.insert(b.id, p.num_spots);
                 sim.driving_to_offstreet.insert(p.driving_pos.lane(), b.id);
             }
         }
         sim
     }
 
-    pub fn get_free_spots(&self, l: LaneID) -> Vec<ParkingSpot> {
+    pub fn get_free_onstreet_spots(&self, l: LaneID) -> Vec<ParkingSpot> {
         let mut spots: Vec<ParkingSpot> = Vec::new();
         if let Some(lane) = self.onstreet_lanes.get(&l) {
             for spot in lane.spots() {
@@ -91,16 +88,13 @@ impl ParkingSimState {
                 }
             }
         }
-        for b in self.driving_to_offstreet.get(l) {
-            spots.extend(self.get_free_offstreet_spots(*b));
-        }
         spots
     }
 
     pub fn get_free_offstreet_spots(&self, b: BuildingID) -> Vec<ParkingSpot> {
         let mut spots: Vec<ParkingSpot> = Vec::new();
         for idx in 0..self.num_spots_per_offstreet.get(&b).cloned().unwrap_or(0) {
-            let spot = ParkingSpot::offstreet(b, idx);
+            let spot = ParkingSpot::Offstreet(b, idx);
             if self.is_free(spot) {
                 spots.push(spot);
             }
@@ -111,6 +105,16 @@ impl ParkingSimState {
     pub fn reserve_spot(&mut self, spot: ParkingSpot) {
         assert!(self.is_free(spot));
         self.reserved_spots.insert(spot);
+
+        // Sanity check the spot exists
+        match spot {
+            ParkingSpot::Onstreet(l, idx) => {
+                assert!(idx < self.onstreet_lanes[&l].spot_dist_along.len());
+            }
+            ParkingSpot::Offstreet(b, idx) => {
+                assert!(idx < self.num_spots_per_offstreet[&b]);
+            }
+        }
     }
 
     pub fn remove_parked_car(&mut self, p: ParkedCar) {
@@ -120,40 +124,21 @@ impl ParkingSimState {
         self.occupants
             .remove(&p.spot)
             .expect("remove_parked_car missing from occupants");
-        if let Some(id) = p.vehicle.owner {
-            self.owner_to_car.remove(&id);
-        }
-        self.dynamically_reserved_cars.remove(&p.vehicle.id);
+        self.events
+            .push(Event::CarLeftParkingSpot(p.vehicle.id, p.spot));
     }
 
     pub fn add_parked_car(&mut self, p: ParkedCar) {
+        self.events
+            .push(Event::CarReachedParkingSpot(p.vehicle.id, p.spot));
+
         assert!(self.reserved_spots.remove(&p.spot));
+
+        assert!(!self.occupants.contains_key(&p.spot));
         self.occupants.insert(p.spot, p.vehicle.id);
-        if let Some(id) = p.vehicle.owner {
-            if self.owner_to_car.contains_key(&id) {
-                // TODO This should be an assertion. But right now, the same person can go on
-                // multiple trips concurrently. ;)
-                println!(
-                    "WARNING: {} is temporarily a doppelgänger and has two parked cars",
-                    id
-                );
-            }
-            self.owner_to_car.insert(id, p.vehicle.id);
-        }
+
+        assert!(!self.parked_cars.contains_key(&p.vehicle.id));
         self.parked_cars.insert(p.vehicle.id, p);
-    }
-
-    pub fn dynamically_reserve_car(&mut self, p: PersonID) -> Option<ParkedCar> {
-        let car = self.owner_to_car.get(&p)?;
-        if self.dynamically_reserved_cars.contains(car) {
-            return None;
-        }
-        self.dynamically_reserved_cars.insert(*car);
-        Some(self.parked_cars[car].clone())
-    }
-
-    pub fn dynamically_return_car(&mut self, p: ParkedCar) {
-        self.dynamically_reserved_cars.remove(&p.vehicle.id);
     }
 
     pub fn get_draw_cars(&self, id: LaneID, map: &Map) -> Vec<DrawCarInput> {
@@ -188,10 +173,6 @@ impl ParkingSimState {
             }
             ParkingSpot::Offstreet(_, _) => None,
         }
-    }
-
-    pub fn does_car_exist(&self, id: CarID) -> bool {
-        self.parked_cars.contains_key(&id)
     }
 
     // There's no DrawCarInput for cars parked offstreet, so we need this.
@@ -263,7 +244,7 @@ impl ParkingSimState {
             }
 
             for idx in 0..self.num_spots_per_offstreet[&b] {
-                let spot = ParkingSpot::offstreet(*b, idx);
+                let spot = ParkingSpot::Offstreet(*b, idx);
                 if self.is_free(spot) {
                     maybe_spot = Some(spot);
                     break;
@@ -307,7 +288,7 @@ impl ParkingSimState {
     pub fn get_offstreet_parked_cars(&self, b: BuildingID) -> Vec<&ParkedCar> {
         let mut results = Vec::new();
         for idx in 0..self.num_spots_per_offstreet.get(&b).cloned().unwrap_or(0) {
-            if let Some(car) = self.occupants.get(&ParkingSpot::offstreet(b, idx)) {
+            if let Some(car) = self.occupants.get(&ParkingSpot::Offstreet(b, idx)) {
                 results.push(&self.parked_cars[&car]);
             }
         }
@@ -317,8 +298,8 @@ impl ParkingSimState {
     pub fn get_owner_of_car(&self, id: CarID) -> Option<PersonID> {
         self.parked_cars.get(&id).and_then(|p| p.vehicle.owner)
     }
-    pub fn get_car_owned_by(&self, id: PersonID) -> Option<CarID> {
-        self.owner_to_car.get(&id).cloned()
+    pub fn lookup_parked_car(&self, id: CarID) -> Option<&ParkedCar> {
+        self.parked_cars.get(&id)
     }
 
     // (Filled, available)
@@ -335,16 +316,76 @@ impl ParkingSimState {
                 }
             }
         }
-        for (b, idx) in &self.num_spots_per_offstreet {
-            let spot = ParkingSpot::Offstreet(*b, *idx);
-            if self.is_free(spot) {
-                available.push(spot);
-            } else {
-                filled.push(spot);
+        for (b, num_spots) in &self.num_spots_per_offstreet {
+            for idx in 0..*num_spots {
+                let spot = ParkingSpot::Offstreet(*b, idx);
+                if self.is_free(spot) {
+                    available.push(spot);
+                } else {
+                    filled.push(spot);
+                }
             }
         }
 
         (filled, available)
+    }
+
+    // Unrealistically assumes the driver has knowledge of currently free parking spots, even if
+    // they're far away. Since they don't reserve the spot in advance, somebody else can still beat
+    // them there, producing some nice, realistic churn if there's too much contention.
+    // The first PathStep is the turn after start, NOT PathStep::Lane(start).
+    pub fn path_to_free_parking_spot(
+        &self,
+        start: LaneID,
+        vehicle: &Vehicle,
+        map: &Map,
+    ) -> Option<(Vec<PathStep>, ParkingSpot, Position)> {
+        let mut backrefs: HashMap<LaneID, TurnID> = HashMap::new();
+        // Don't travel far.
+        // This is a max-heap, so negate all distances. Tie breaker is lane ID, arbitrary but
+        // deterministic.
+        let mut queue: BinaryHeap<(Distance, LaneID)> = BinaryHeap::new();
+        queue.push((Distance::ZERO, start));
+
+        while !queue.is_empty() {
+            let (dist_so_far, current) = queue.pop().unwrap();
+            // If the current lane has a spot open, we wouldn't be asking. This can happen if a spot
+            // opens up on the 'start' lane, but behind the car.
+            if current != start {
+                if let Some((spot, pos)) =
+                    self.get_first_free_spot(Position::new(current, Distance::ZERO), vehicle, map)
+                {
+                    let mut steps = vec![PathStep::Lane(current)];
+                    let mut current = current;
+                    loop {
+                        if current == start {
+                            // Don't include PathStep::Lane(start)
+                            steps.pop();
+                            steps.reverse();
+                            return Some((steps, spot, pos));
+                        }
+                        let turn = backrefs[&current];
+                        steps.push(PathStep::Turn(turn));
+                        steps.push(PathStep::Lane(turn.src));
+                        current = turn.src;
+                    }
+                }
+            }
+            for turn in map.get_turns_for(current, PathConstraints::Car) {
+                if !backrefs.contains_key(&turn.id.dst) {
+                    let dist_this_step = turn.geom.length() + map.get_l(current).length();
+                    backrefs.insert(turn.id.dst, turn.id);
+                    // Remember, keep things negative
+                    queue.push((dist_so_far - dist_this_step, turn.id.dst));
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn collect_events(&mut self) -> Vec<Event> {
+        std::mem::replace(&mut self.events, Vec::new())
     }
 }
 
@@ -397,7 +438,7 @@ impl ParkingLane {
     fn spots(&self) -> Vec<ParkingSpot> {
         let mut spots = Vec::new();
         for idx in 0..self.spot_dist_along.len() {
-            spots.push(ParkingSpot::onstreet(self.parking_lane, idx));
+            spots.push(ParkingSpot::Onstreet(self.parking_lane, idx));
         }
         spots
     }

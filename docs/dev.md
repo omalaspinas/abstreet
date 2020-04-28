@@ -5,7 +5,7 @@
 You will first need:
 
 - Standard dependencies: `bash`, `curl`, `unzip`, `gunzip`
-- Rust, at least 1.42. https://www.rust-lang.org/tools/install
+- Rust, at least 1.43. https://www.rust-lang.org/tools/install
 
 One-time setup:
 
@@ -42,9 +42,6 @@ One-time setup:
     experience, so they're hidden for now.
   - `cargo run -- --tutorial=12` starts somewhere in the tutorial
   - Adding `--edits='name of edits'` starts with edits applied to the map.
-- If you're testing anything related to prebaked results (used for comparisons
-  against a baseline in challenge mode), make sure to set `--rng_seed=42`. The
-  `--dev` flag does by default.
 - All code is automatically formatted using
   https://github.com/rust-lang/rustfmt; please run `cargo +nightly fmt` before
   sending a PR. (You have to install the nightly toolchain just for fmt)
@@ -94,8 +91,6 @@ Constructing the map:
 - `kml`: extract shapes from KML shapefiles
 - `map_model`: the final representation of the map, also conversion from the
   intermediate map format into the final format
-- `popdat`: importing daily trips from PSRC's Soundcast model, specific to
-  Seattle
 - `map_editor`: GUI for modifying geometry of maps and creating maps from
   scratch
 - `importer`: tool to run the entire import pipeline

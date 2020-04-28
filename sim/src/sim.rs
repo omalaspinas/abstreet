@@ -1,18 +1,18 @@
 use crate::{
-    AgentID, Analytics, CarID, Command, CreateCar, DrawCarInput, DrawPedCrowdInput,
-    DrawPedestrianInput, DrivingGoal, DrivingSimState, Event, GetDrawAgents, IntersectionSimState,
+    AgentID, AlertLocation, Analytics, CarID, Command, CreateCar, DrawCarInput, DrawPedCrowdInput,
+    DrawPedestrianInput, DrivingSimState, Event, GetDrawAgents, IntersectionSimState,
     PandemicModel, ParkedCar, ParkingSimState, ParkingSpot, PedestrianID, Person, PersonID,
-    PersonState, Router, Scheduler, SidewalkPOI, SidewalkSpot, TransitSimState, TripCount,
-    TripEndpoint, TripID, TripLeg, TripManager, TripMode, TripPhaseType, TripPositions, TripResult,
-    TripSpawner, TripSpec, UnzoomedAgent, VehicleSpec, VehicleType, WalkingSimState, BUS_LENGTH,
+    PersonState, Router, Scheduler, SidewalkPOI, SidewalkSpot, TransitSimState, TripEndpoint,
+    TripID, TripManager, TripMode, TripPhaseType, TripPositions, TripResult, TripSpawner,
+    UnzoomedAgent, Vehicle, VehicleSpec, VehicleType, WalkingSimState, BUS_LENGTH, MIN_CAR_LENGTH,
 };
 use abstutil::Timer;
 use derivative::Derivative;
-use geom::{Distance, Duration, PolyLine, Pt2D, Time};
+use geom::{Distance, Duration, PolyLine, Pt2D, Speed, Time};
 use instant::Instant;
 use map_model::{
     BuildingID, BusRoute, BusRouteID, IntersectionID, LaneID, Map, Path, PathConstraints,
-    PathRequest, PathStep, RoadID, Traversable,
+    PathRequest, PathStep, Position, RoadID, Traversable,
 };
 use rand_xorshift::XorShiftRng;
 use serde_derive::{Deserialize, Serialize};
@@ -36,8 +36,6 @@ pub struct Sim {
     pandemic: Option<PandemicModel>,
     scheduler: Scheduler,
     time: Time,
-    car_id_counter: usize,
-    ped_id_counter: usize,
 
     // TODO Reconsider these
     pub(crate) map_name: String,
@@ -62,6 +60,10 @@ pub struct Sim {
     #[derivative(PartialEq = "ignore")]
     #[serde(skip_serializing, skip_deserializing)]
     check_for_gridlock: Option<(Time, Duration)>,
+
+    #[derivative(PartialEq = "ignore")]
+    #[serde(skip_serializing, skip_deserializing)]
+    alerts: AlertHandler,
 }
 
 #[derive(Clone)]
@@ -71,8 +73,25 @@ pub struct SimOptions {
     pub use_freeform_policy_everywhere: bool,
     pub disable_block_the_box: bool,
     pub recalc_lanechanging: bool,
-    pub clear_laggy_head_early: bool,
+    pub break_turn_conflict_cycles: bool,
     pub enable_pandemic_model: Option<XorShiftRng>,
+    pub alerts: AlertHandler,
+}
+
+#[derive(Clone)]
+pub enum AlertHandler {
+    // Just print the alert to STDOUT
+    Print,
+    // Print the alert to STDOUT and don't proceed until the UI calls clear_alerts()
+    Block,
+    // Don't do anything
+    Silence,
+}
+
+impl std::default::Default for AlertHandler {
+    fn default() -> AlertHandler {
+        AlertHandler::Print
+    }
 }
 
 impl SimOptions {
@@ -83,8 +102,9 @@ impl SimOptions {
             use_freeform_policy_everywhere: false,
             disable_block_the_box: false,
             recalc_lanechanging: true,
-            clear_laggy_head_early: false,
+            break_turn_conflict_cycles: false,
             enable_pandemic_model: None,
+            alerts: AlertHandler::Print,
         }
     }
 }
@@ -97,11 +117,7 @@ impl Sim {
             scheduler.push(Time::START_OF_DAY + d, Command::Savestate(d));
         }
         Sim {
-            driving: DrivingSimState::new(
-                map,
-                opts.recalc_lanechanging,
-                opts.clear_laggy_head_early,
-            ),
+            driving: DrivingSimState::new(map, opts.recalc_lanechanging),
             parking: ParkingSimState::new(map, timer),
             walking: WalkingSimState::new(),
             intersections: IntersectionSimState::new(
@@ -109,6 +125,7 @@ impl Sim {
                 &mut scheduler,
                 opts.use_freeform_policy_everywhere,
                 opts.disable_block_the_box,
+                opts.break_turn_conflict_cycles,
             ),
             transit: TransitSimState::new(),
             trips: TripManager::new(),
@@ -119,8 +136,6 @@ impl Sim {
             },
             scheduler,
             time: Time::START_OF_DAY,
-            car_id_counter: 0,
-            ped_id_counter: 0,
 
             map_name: map.get_name().to_string(),
             // TODO
@@ -129,6 +144,7 @@ impl Sim {
             step_count: 0,
             trip_positions: None,
             check_for_gridlock: None,
+            alerts: opts.alerts,
 
             analytics: Analytics::new(),
         }
@@ -137,21 +153,8 @@ impl Sim {
     pub fn make_spawner(&self) -> TripSpawner {
         TripSpawner::new()
     }
-    pub fn flush_spawner(
-        &mut self,
-        spawner: TripSpawner,
-        map: &Map,
-        timer: &mut Timer,
-        retry_if_no_room: bool,
-    ) {
-        spawner.finalize(
-            map,
-            &mut self.trips,
-            &mut self.scheduler,
-            &self.parking,
-            timer,
-            retry_if_no_room,
-        );
+    pub fn flush_spawner(&mut self, spawner: TripSpawner, map: &Map, timer: &mut Timer) {
+        spawner.finalize(map, &mut self.trips, &mut self.scheduler, timer);
 
         if let Some(ref mut m) = self.pandemic {
             m.initialize(self.trips.get_all_people(), &mut self.scheduler);
@@ -159,23 +162,9 @@ impl Sim {
 
         self.dispatch_events(Vec::new(), map);
     }
-    // TODO Friend method pattern :(
-    pub(crate) fn spawner_parking(&self) -> &ParkingSimState {
-        &self.parking
-    }
-    pub(crate) fn spawner_new_car_id(&mut self) -> usize {
-        let id = self.car_id_counter;
-        self.car_id_counter += 1;
-        id
-    }
-    pub(crate) fn spawner_new_ped_id(&mut self) -> usize {
-        let id = self.ped_id_counter;
-        self.ped_id_counter += 1;
-        id
-    }
 
-    pub fn get_free_spots(&self, l: LaneID) -> Vec<ParkingSpot> {
-        self.parking.get_free_spots(l)
+    pub fn get_free_onstreet_spots(&self, l: LaneID) -> Vec<ParkingSpot> {
+        self.parking.get_free_onstreet_spots(l)
     }
 
     pub fn get_free_offstreet_spots(&self, b: BuildingID) -> Vec<ParkingSpot> {
@@ -187,28 +176,56 @@ impl Sim {
         self.parking.get_all_parking_spots()
     }
 
-    // TODO Should these two be in TripSpawner?
-    pub fn new_person(&mut self, p: PersonID, has_car: bool) {
-        self.trips.new_person(p, has_car);
-    }
-    pub fn random_person(&mut self, has_car: bool) -> PersonID {
-        self.trips.random_person(has_car)
-    }
-    pub fn seed_parked_car(
-        &mut self,
-        vehicle: VehicleSpec,
-        spot: ParkingSpot,
-        owner: Option<PersonID>,
-    ) -> CarID {
-        let id = CarID(self.car_id_counter, VehicleType::Car);
-        self.car_id_counter += 1;
+    // Also returns the start distance of the building. TODO Do that in the Path properly.
+    pub fn walking_path_to_nearest_parking_spot(
+        &self,
+        map: &Map,
+        b: BuildingID,
+    ) -> Option<(Path, Distance)> {
+        let vehicle = Vehicle {
+            id: CarID(0, VehicleType::Car),
+            owner: None,
+            vehicle_type: VehicleType::Car,
+            length: MIN_CAR_LENGTH,
+            max_speed: None,
+        };
+        let driving_lane = map.find_driving_lane_near_building(b);
 
+        // Anything on the current lane? TODO Should find the closest one to the sidewalk, but
+        // need a new method in ParkingSimState to make that easy.
+        let spot = if let Some((spot, _)) = self.parking.get_first_free_spot(
+            Position::new(driving_lane, Distance::ZERO),
+            &vehicle,
+            map,
+        ) {
+            spot
+        } else {
+            let (_, spot, _) =
+                self.parking
+                    .path_to_free_parking_spot(driving_lane, &vehicle, map)?;
+            spot
+        };
+
+        let start = SidewalkSpot::building(b, map).sidewalk_pos;
+        let end = SidewalkSpot::parking_spot(spot, map, &self.parking).sidewalk_pos;
+        let path = map.pathfind(PathRequest {
+            start,
+            end,
+            constraints: PathConstraints::Pedestrian,
+        })?;
+        Some((path, start.dist_along()))
+    }
+
+    // TODO Should these two be in TripSpawner?
+    pub fn new_person(&mut self, p: PersonID, ped_speed: Speed, vehicle_specs: Vec<VehicleSpec>) {
+        self.trips.new_person(p, ped_speed, vehicle_specs);
+    }
+    pub fn random_person(&mut self, ped_speed: Speed, vehicle_specs: Vec<VehicleSpec>) -> &Person {
+        self.trips.random_person(ped_speed, vehicle_specs)
+    }
+    pub(crate) fn seed_parked_car(&mut self, vehicle: Vehicle, spot: ParkingSpot) {
         self.parking.reserve_spot(spot);
-        self.parking.add_parked_car(ParkedCar {
-            vehicle: vehicle.make(id, owner),
-            spot,
-        });
-        id
+        self.parking.add_parked_car(ParkedCar { vehicle, spot });
     }
 
     pub fn get_offstreet_parked_cars(&self, bldg: BuildingID) -> Vec<&ParkedCar> {
@@ -223,9 +240,6 @@ impl Sim {
         for (next_stop_idx, req, mut path, end_dist) in
             self.transit.create_empty_route(route, map).into_iter()
         {
-            let id = CarID(self.car_id_counter, VehicleType::Bus);
-            self.car_id_counter += 1;
-
             // For now, no desire for randomness. Caller can pass in list of specs if that ever
             // changes.
             let vehicle = VehicleSpec {
@@ -233,7 +247,8 @@ impl Sim {
                 length: BUS_LENGTH,
                 max_speed: None,
             }
-            .make(id, None);
+            .make(CarID(self.trips.new_car_id(), VehicleType::Bus), None);
+            let id = vehicle.id;
 
             loop {
                 if path.is_last_step() {
@@ -395,6 +410,18 @@ impl Sim {
         let mut events = Vec::new();
         let mut savestate = false;
         match cmd {
+            Command::StartTrip(id, trip_spec, maybe_req, maybe_path) => {
+                self.trips.start_trip(
+                    self.time,
+                    id,
+                    trip_spec,
+                    maybe_req,
+                    maybe_path,
+                    &mut self.parking,
+                    &mut self.scheduler,
+                    map,
+                );
+            }
             Command::SpawnCar(create_car, retry_if_no_room) => {
                 if self.driving.start_car_on_lane(
                     self.time,
@@ -422,12 +449,6 @@ impl Sim {
                         events.push(Event::TripPhaseStarting(
                             trip,
                             person,
-                            // TODO sketchy...
-                            if create_car.vehicle.id.1 == VehicleType::Car {
-                                TripMode::Drive
-                            } else {
-                                TripMode::Bike
-                            },
                             Some(create_car.req.clone()),
                             if create_car.vehicle.id.1 == VehicleType::Car {
                                 TripPhaseType::Driving
@@ -445,111 +466,63 @@ impl Sim {
                         Command::SpawnCar(create_car, retry_if_no_room),
                     );
                 } else {
-                    if let Some((trip, _)) = create_car.trip_and_person {
-                        println!("No room to spawn car for {}. Not retrying!", trip);
-                        self.trips.abort_trip_failed_start(trip);
-                    } else {
-                        println!("No room to spawn bus (no trip). Not retrying!");
-                    }
+                    // Buses don't use Command::SpawnCar, so this must exist.
+                    let (trip, person) = create_car.trip_and_person.unwrap();
+                    println!(
+                        "No room to spawn car for {} by {}. Not retrying!",
+                        trip, person
+                    );
+                    self.trips.abort_trip(
+                        self.time,
+                        trip,
+                        Some(create_car.vehicle),
+                        &mut self.parking,
+                        &mut self.scheduler,
+                        map,
+                    );
                 }
             }
-            Command::SpawnPed(mut create_ped) => {
-                let ok = if let SidewalkPOI::DeferredParkingSpot(b, driving_goal) =
-                    create_ped.goal.connection.clone()
-                {
-                    if let Some(parked_car) =
-                        self.parking.dynamically_reserve_car(create_ped.person)
-                    {
-                        create_ped.goal =
-                            SidewalkSpot::parking_spot(parked_car.spot, map, &self.parking);
-                        create_ped.req = PathRequest {
-                            start: create_ped.start.sidewalk_pos,
-                            end: create_ped.goal.sidewalk_pos,
-                            constraints: PathConstraints::Pedestrian,
-                        };
-                        if let Some(path) = map.pathfind(create_ped.req.clone()) {
-                            create_ped.path = path;
-                            let mut legs = vec![
-                                TripLeg::Walk(
-                                    create_ped.id,
-                                    create_ped.speed,
-                                    create_ped.goal.clone(),
-                                ),
-                                TripLeg::Drive(parked_car.vehicle.clone(), driving_goal.clone()),
-                            ];
-                            match driving_goal {
-                                DrivingGoal::ParkNear(b) => {
-                                    legs.push(TripLeg::Walk(
-                                        create_ped.id,
-                                        create_ped.speed,
-                                        SidewalkSpot::building(b, map),
-                                    ));
-                                }
-                                DrivingGoal::Border(_, _) => {}
-                            }
-                            self.trips.dynamically_override_legs(create_ped.trip, legs);
-                            true
-                        } else {
-                            println!(
-                                "WARNING: At {}, {} giving up because no path from {} to {:?}",
-                                self.time, create_ped.id, b, create_ped.goal.connection
-                            );
-                            self.parking.dynamically_return_car(parked_car);
-                            false
-                        }
-                    } else {
-                        println!(
-                            "WARNING: At {}, no free car for {} spawning at {}",
-                            self.time, create_ped.id, b
+            Command::SpawnPed(create_ped) => {
+                // Do the order a bit backwards so we don't have to clone the
+                // CreatePedestrian. spawn_ped can't fail.
+                self.trips
+                    .agent_starting_trip_leg(AgentID::Pedestrian(create_ped.id), create_ped.trip);
+                events.push(Event::TripPhaseStarting(
+                    create_ped.trip,
+                    create_ped.person,
+                    Some(create_ped.req.clone()),
+                    TripPhaseType::Walking,
+                ));
+                self.analytics.record_demand(&create_ped.path, map);
+
+                // Maybe there's actually no work to do!
+                match (&create_ped.start.connection, &create_ped.goal.connection) {
+                    (
+                        SidewalkPOI::Building(b1),
+                        SidewalkPOI::ParkingSpot(ParkingSpot::Offstreet(b2, idx)),
+                    ) if b1 == b2 => {
+                        events.push(Event::Alert(
+                            AlertLocation::Building(*b1),
+                            format!("car leaving bldg"),
+                        ));
+                        self.trips.ped_reached_parking_spot(
+                            self.time,
+                            create_ped.id,
+                            ParkingSpot::Offstreet(*b2, *idx),
+                            Duration::ZERO,
+                            map,
+                            &mut self.parking,
+                            &mut self.scheduler,
                         );
-                        false
                     }
-                } else {
-                    true
-                };
-                if ok {
-                    // Do the order a bit backwards so we don't have to clone the
-                    // CreatePedestrian. spawn_ped can't fail.
-                    self.trips.agent_starting_trip_leg(
-                        AgentID::Pedestrian(create_ped.id),
-                        create_ped.trip,
-                    );
-                    events.push(Event::TripPhaseStarting(
-                        create_ped.trip,
-                        create_ped.person,
-                        TripMode::Walk,
-                        Some(create_ped.req.clone()),
-                        TripPhaseType::Walking,
-                    ));
-                    self.analytics.record_demand(&create_ped.path, map);
-
-                    // Maybe there's actually no work to do!
-                    match (&create_ped.start.connection, &create_ped.goal.connection) {
-                        (
-                            SidewalkPOI::Building(b1),
-                            SidewalkPOI::ParkingSpot(ParkingSpot::Offstreet(b2, idx)),
-                        ) if b1 == b2 => {
-                            self.trips.ped_reached_parking_spot(
-                                self.time,
-                                create_ped.id,
-                                ParkingSpot::Offstreet(*b2, *idx),
-                                Duration::ZERO,
-                                map,
-                                &self.parking,
-                                &mut self.scheduler,
-                            );
+                    _ => {
+                        if let SidewalkPOI::Building(b) = &create_ped.start.connection {
+                            events.push(Event::PersonLeavesBuilding(create_ped.person, *b));
                         }
-                        _ => {
-                            if let SidewalkPOI::Building(b) = &create_ped.start.connection {
-                                events.push(Event::PersonLeavesBuilding(create_ped.person, *b));
-                            }
 
-                            self.walking
-                                .spawn_ped(self.time, create_ped, map, &mut self.scheduler);
-                        }
+                        self.walking
+                            .spawn_ped(self.time, create_ped, map, &mut self.scheduler);
                     }
-                } else {
-                    self.trips.abort_trip_failed_start(create_ped.trip);
                 }
             }
             Command::UpdateCar(car) => {
@@ -580,7 +553,7 @@ impl Sim {
                     self.time,
                     map,
                     &mut self.intersections,
-                    &self.parking,
+                    &mut self.parking,
                     &mut self.scheduler,
                     &mut self.trips,
                     &mut self.transit,
@@ -596,15 +569,19 @@ impl Sim {
                 savestate = true;
             }
             Command::Pandemic(cmd) => {
-                if let crate::pandemic::Cmd::CancelFutureTrips(person) = cmd {
-                    self.trips
-                        .cancel_future_trips(self.time, person, &mut self.scheduler);
-                } else {
-                    self.pandemic
-                        .as_mut()
-                        .unwrap()
-                        .handle_cmd(self.time, cmd, &mut self.scheduler);
-                }
+                self.pandemic
+                    .as_mut()
+                    .unwrap()
+                    .handle_cmd(self.time, cmd, &mut self.scheduler);
+            }
+            Command::FinishRemoteTrip(trip) => {
+                self.trips.remote_trip_finished(
+                    self.time,
+                    trip,
+                    map,
+                    &mut self.parking,
+                    &mut self.scheduler,
+                );
             }
         }
 
@@ -620,6 +597,7 @@ impl Sim {
         events.extend(self.driving.collect_events());
         events.extend(self.walking.collect_events());
         events.extend(self.intersections.collect_events());
+        events.extend(self.parking.collect_events());
         for ev in events {
             if let Some(ref mut m) = self.pandemic {
                 m.handle_event(self.time, &ev, &mut self.scheduler);
@@ -637,6 +615,24 @@ impl Sim {
         timer.start(format!("Advance sim to {}", end_time));
         while self.time < end_time {
             self.minimal_step(map, end_time - self.time);
+            if !self.analytics.alerts.is_empty() {
+                match self.alerts {
+                    AlertHandler::Print => {
+                        for (t, loc, msg) in self.analytics.alerts.drain(..) {
+                            println!("Alert at {} ({:?}): {}", t, loc, msg);
+                        }
+                    }
+                    AlertHandler::Block => {
+                        for (t, loc, msg) in &self.analytics.alerts {
+                            println!("Alert at {} ({:?}): {}", t, loc, msg);
+                        }
+                        break;
+                    }
+                    AlertHandler::Silence => {
+                        self.analytics.alerts.clear();
+                    }
+                }
+            }
             if Duration::realtime_elapsed(last_update) >= Duration::seconds(1.0) {
                 // TODO Not timer?
                 println!(
@@ -675,6 +671,24 @@ impl Sim {
 
         while self.time < end_time && Duration::realtime_elapsed(started_at) < real_time_limit {
             self.minimal_step(map, end_time - self.time);
+            if !self.analytics.alerts.is_empty() {
+                match self.alerts {
+                    AlertHandler::Print => {
+                        for (t, loc, msg) in self.analytics.alerts.drain(..) {
+                            println!("Alert at {} ({:?}): {}", t, loc, msg);
+                        }
+                    }
+                    AlertHandler::Block => {
+                        for (t, loc, msg) in &self.analytics.alerts {
+                            println!("Alert at {} ({:?}): {}", t, loc, msg);
+                        }
+                        break;
+                    }
+                    AlertHandler::Silence => {
+                        self.analytics.alerts.clear();
+                    }
+                }
+            }
             if let Some((ref mut t, dt)) = self.check_for_gridlock {
                 if self.time >= *t {
                     *t += dt;
@@ -899,10 +913,6 @@ impl Sim {
         self.trips.num_ppl()
     }
 
-    pub fn count_trips(&self, endpt: TripEndpoint) -> TripCount {
-        self.trips.count_trips(endpt, self.time)
-    }
-
     pub fn debug_ped(&self, id: PedestrianID) {
         self.walking.debug_ped(id);
         self.trips.debug_trip(AgentID::Pedestrian(id));
@@ -983,13 +993,15 @@ impl Sim {
             .get_owner_of_car(id)
             .or_else(|| self.parking.get_owner_of_car(id))
     }
-    // Only currently parked cars
-    pub fn get_parked_car_owned_by(&self, id: PersonID) -> Option<CarID> {
-        self.parking.get_car_owned_by(id)
+    pub fn lookup_parked_car(&self, id: CarID) -> Option<&ParkedCar> {
+        self.parking.lookup_parked_car(id)
     }
 
-    pub fn get_person(&self, id: PersonID) -> &Person {
+    pub fn lookup_person(&self, id: PersonID) -> Option<&Person> {
         self.trips.get_person(id)
+    }
+    pub fn get_person(&self, id: PersonID) -> &Person {
+        self.trips.get_person(id).unwrap()
     }
     pub fn get_all_people(&self) -> &Vec<Person> {
         self.trips.get_all_people()
@@ -1005,7 +1017,7 @@ impl Sim {
 
         let id = CarID(idx, VehicleType::Car);
         // Only cars can be parked.
-        if self.parking.does_car_exist(id) {
+        if self.parking.lookup_parked_car(id).is_some() {
             return Some(id);
         }
 
@@ -1059,16 +1071,18 @@ impl Sim {
         TripResult::ModeChange
     }
     pub fn get_canonical_pt_per_person(&self, p: PersonID, map: &Map) -> Option<Pt2D> {
-        match self.trips.get_person(p).state {
+        match self.trips.get_person(p)?.state {
             PersonState::Inside(b) => Some(map.get_b(b).polygon.center()),
             PersonState::Trip(t) => self.get_canonical_pt_per_trip(t, map).ok(),
-            PersonState::OffMap | PersonState::Limbo => None,
+            PersonState::OffMap => None,
         }
     }
 
     pub fn does_agent_exist(&self, id: AgentID) -> bool {
         match id {
-            AgentID::Car(id) => self.parking.does_car_exist(id) || self.driving.does_car_exist(id),
+            AgentID::Car(id) => {
+                self.parking.lookup_parked_car(id).is_some() || self.driving.does_car_exist(id)
+            }
             AgentID::Pedestrian(id) => self.walking.does_ped_exist(id),
         }
     }
@@ -1123,10 +1137,6 @@ impl Sim {
         self.intersections.find_gridlock(self.time, threshold)
     }
 
-    pub fn trip_spec_to_path_req(&self, spec: &TripSpec, map: &Map) -> PathRequest {
-        spec.get_pathfinding_request(map, &self.parking)
-    }
-
     pub fn bldg_to_people(&self, b: BuildingID) -> Vec<PersonID> {
         self.trips.bldg_to_people(b)
     }
@@ -1157,18 +1167,29 @@ impl Sim {
 impl Sim {
     pub fn kill_stuck_car(&mut self, id: CarID, map: &Map) {
         if let Some(trip) = self.agent_to_trip(AgentID::Car(id)) {
-            self.trips.abort_trip_failed_start(trip);
-            self.driving.kill_stuck_car(
+            let vehicle = self.driving.kill_stuck_car(
                 id,
                 self.time,
                 map,
                 &mut self.scheduler,
                 &mut self.intersections,
             );
+            self.trips.abort_trip(
+                self.time,
+                trip,
+                Some(vehicle),
+                &mut self.parking,
+                &mut self.scheduler,
+                map,
+            );
             println!("Forcibly killed {}", id);
         } else {
             println!("{} has no trip?!", id);
         }
+    }
+
+    pub fn clear_alerts(&mut self) -> Vec<(Time, AlertLocation, String)> {
+        std::mem::replace(&mut self.analytics.alerts, Vec::new())
     }
 }
 

@@ -1,14 +1,20 @@
 use abstutil::{prettyprint_usize, FileWithProgress, Timer};
 use geom::{Distance, Duration, FindClosest, LonLat, Pt2D, Time};
 use map_model::Map;
-use popdat::psrc::{Endpoint, Mode, Parcel, Purpose, Trip};
-use serde_derive::Deserialize;
+use serde_derive::{Deserialize, Serialize};
+use sim::TripMode;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 
+#[derive(Serialize, Deserialize)]
+pub struct PopDat {
+    pub trips: Vec<OrigTrip>,
+    pub parcels: BTreeMap<i64, Parcel>,
+}
+
 // Extract trip demand data from PSRC's Soundcast outputs.
-pub fn import_psrc_data() {
+pub fn import_data() {
     let mut timer = abstutil::Timer::new("creating popdat");
     let (trips, parcels) = import_trips(
         "../data/input/parcels_urbansim.txt",
@@ -16,7 +22,7 @@ pub fn import_psrc_data() {
         &mut timer,
     )
     .unwrap();
-    let popdat = popdat::PopDat { trips, parcels };
+    let popdat = PopDat { trips, parcels };
     abstutil::write_binary(abstutil::path_popdat(), &popdat);
 }
 
@@ -24,8 +30,8 @@ fn import_trips(
     parcels_path: &str,
     trips_path: &str,
     timer: &mut Timer,
-) -> Result<(Vec<Trip>, BTreeMap<i64, Parcel>), failure::Error> {
-    let (parcels, metadata, oob_parcels) = import_parcels(parcels_path, timer)?;
+) -> Result<(Vec<OrigTrip>, BTreeMap<i64, Parcel>), failure::Error> {
+    let (parcels, metadata) = import_parcels(parcels_path, timer)?;
 
     if false {
         timer.start("recording parcel IDs");
@@ -46,25 +52,12 @@ fn import_trips(
         total_records += 1;
         let rec: RawTrip = rec?;
 
-        let from = if let Some(f) = parcels.get(&(rec.opcl as usize)) {
-            f.clone()
-        } else {
-            if false {
-                println!(
-                    "skipping missing from {}",
-                    oob_parcels[&(rec.opcl as usize)]
-                );
-            }
-            continue;
-        };
-        let to = if let Some(t) = parcels.get(&(rec.dpcl as usize)) {
-            t.clone()
-        } else {
-            continue;
-        };
+        let from = parcels[&(rec.opcl as usize)].clone();
+        let to = parcels[&(rec.dpcl as usize)].clone();
 
+        // If both are None, then skip -- the trip doesn't start or end within huge_seattle.
+        // If both are the same building, also skip -- that's a redundant trip.
         if from.osm_building == to.osm_building {
-            // TODO Losing some people here.
             if from.osm_building.is_some() {
                 /*timer.warn(format!(
                     "Skipping trip from parcel {} to {}; both match OSM building {:?}",
@@ -76,13 +69,7 @@ fn import_trips(
 
         let depart_at = Time::START_OF_DAY + Duration::minutes(rec.deptm as usize);
 
-        let mode = if let Some(m) = get_mode(&rec.mode) {
-            m
-        } else {
-            // TODO Losing some people here.
-            continue;
-        };
-
+        let mode = get_mode(&rec.mode);
         let purpose = (get_purpose(&rec.opurp), get_purpose(&rec.dpurp));
 
         let trip_time = Duration::f64_minutes(rec.travtime);
@@ -92,7 +79,7 @@ fn import_trips(
         people.insert(person);
         let seq = (rec.tour as usize, rec.half == 2.0, rec.tseg as usize);
 
-        trips.push(Trip {
+        trips.push(OrigTrip {
             from,
             to,
             depart_at,
@@ -119,19 +106,11 @@ fn import_trips(
 }
 
 // TODO Do we also need the zone ID, or is parcel ID globally unique?
-// Returns (parcel ID -> Endpoint), (OSM building ID -> metadata), and (parcel ID -> LonLat) of
-// filtered parcels
+// Returns (parcel ID -> Endpoint) and (OSM building ID -> metadata)
 fn import_parcels(
     path: &str,
     timer: &mut Timer,
-) -> Result<
-    (
-        HashMap<usize, Endpoint>,
-        BTreeMap<i64, Parcel>,
-        HashMap<usize, LonLat>,
-    ),
-    failure::Error,
-> {
+) -> Result<(HashMap<usize, Endpoint>, BTreeMap<i64, Parcel>), failure::Error> {
     let map = Map::new(abstutil::path_map("huge_seattle"), false, timer);
 
     // TODO I really just want to do polygon containment with a quadtree. FindClosest only does
@@ -189,8 +168,6 @@ fn import_parcels(
     let bounds = map.get_gps_bounds();
     let mut result = HashMap::new();
     let mut metadata = BTreeMap::new();
-    let mut oob = HashMap::new();
-    let orig_parcels = parcel_metadata.len();
     timer.start_iter("finalize parcel output", parcel_metadata.len());
     for ((x, y), (id, num_households, num_employees, offstreet_parking_spaces)) in x_coords
         .into_iter()
@@ -199,37 +176,34 @@ fn import_parcels(
     {
         timer.next();
         let pt = LonLat::new(x, y);
-        if bounds.contains(pt) {
-            let osm_building = closest_bldg
+        let osm_building = if bounds.contains(pt) {
+            closest_bldg
                 .closest_pt(Pt2D::forcibly_from_gps(pt, bounds), Distance::meters(30.0))
-                .map(|(b, _)| b);
-            if let Some(b) = osm_building {
-                metadata.insert(
-                    b,
-                    Parcel {
-                        num_households,
-                        num_employees,
-                        offstreet_parking_spaces,
-                    },
-                );
-            }
-            result.insert(
-                id,
-                Endpoint {
-                    pos: pt,
-                    osm_building,
+                .map(|(b, _)| b)
+        } else {
+            None
+        };
+        if let Some(b) = osm_building {
+            metadata.insert(
+                b,
+                Parcel {
+                    num_households,
+                    num_employees,
+                    offstreet_parking_spaces,
                 },
             );
-        } else {
-            oob.insert(id, pt);
         }
+        result.insert(
+            id,
+            Endpoint {
+                pos: pt,
+                osm_building,
+                parcel_id: id,
+            },
+        );
     }
-    timer.note(format!(
-        "{} parcels. {} filtered out",
-        prettyprint_usize(result.len()),
-        prettyprint_usize(orig_parcels - result.len())
-    ));
-    Ok((result, metadata, oob))
+    timer.note(format!("{} parcels", prettyprint_usize(result.len())));
+    Ok((result, metadata))
 }
 
 // From https://github.com/psrc/soundcast/wiki/Outputs#trip-file-_triptsv, opurp and dpurp
@@ -251,18 +225,16 @@ fn get_purpose(code: &str) -> Purpose {
 }
 
 // From https://github.com/psrc/soundcast/wiki/Outputs#trip-file-_triptsv, mode
-fn get_mode(code: &str) -> Option<Mode> {
+fn get_mode(code: &str) -> TripMode {
     match code {
-        "1.0" => Some(Mode::Walk),
-        "2.0" => Some(Mode::Bike),
-        "3.0" | "4.0" | "5.0" => Some(Mode::Drive),
-        "6.0" => Some(Mode::Transit),
-        // TODO Park-and-ride!
-        "7.0" => None,
-        // TODO School bus!
-        "8.0" => None,
-        // TODO Invalid code, what's this one mean?
-        "0.0" => None,
+        "1.0" => TripMode::Walk,
+        "2.0" => TripMode::Bike,
+        "3.0" | "4.0" | "5.0" => TripMode::Drive,
+        // TODO Park-and-ride and school bus as walk-to-transit is a little weird.
+        "6.0" | "7.0" | "8.0" => TripMode::Transit,
+        // TODO Invalid code, what's this one mean? I only see a few examples, so just default to
+        // walking.
+        "0.0" => TripMode::Walk,
         _ => panic!("Unknown mode {}", code),
     }
 }
@@ -295,4 +267,49 @@ struct RawParcel {
     parkhr_p: usize,
     xcoord_p: f64,
     ycoord_p: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OrigTrip {
+    pub from: Endpoint,
+    pub to: Endpoint,
+    pub depart_at: Time,
+    pub mode: TripMode,
+
+    // (household, person within household)
+    pub person: (usize, usize),
+    // (tour, false is to destination and true is back from dst, trip within half-tour)
+    pub seq: (usize, bool, usize),
+    pub purpose: (Purpose, Purpose),
+    pub trip_time: Duration,
+    pub trip_dist: Distance,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Endpoint {
+    pub pos: LonLat,
+    pub osm_building: Option<i64>,
+    pub parcel_id: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Parcel {
+    pub num_households: usize,
+    pub num_employees: usize,
+    pub offstreet_parking_spaces: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub enum Purpose {
+    Home,
+    Work,
+    School,
+    Escort,
+    PersonalBusiness,
+    Shopping,
+    Meal,
+    Social,
+    Recreation,
+    Medical,
+    ParkAndRideTransfer,
 }

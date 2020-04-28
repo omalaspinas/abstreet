@@ -1,4 +1,6 @@
-use crate::{pandemic, AgentID, CarID, CreateCar, CreatePedestrian, PedestrianID};
+use crate::{
+    pandemic, AgentID, CarID, CreateCar, CreatePedestrian, PedestrianID, TripID, TripSpec,
+};
 use derivative::Derivative;
 use geom::{Duration, Histogram, Time};
 use map_model::{IntersectionID, Path, PathRequest};
@@ -11,6 +13,7 @@ pub enum Command {
     // If true, retry when there's no room to spawn somewhere
     SpawnCar(CreateCar, bool),
     SpawnPed(CreatePedestrian),
+    StartTrip(TripID, TripSpec, Option<PathRequest>, Option<Path>),
     UpdateCar(CarID),
     // Distinguish this from UpdateCar to avoid confusing things
     UpdateLaggyHead(CarID),
@@ -18,6 +21,7 @@ pub enum Command {
     UpdateIntersection(IntersectionID),
     Savestate(Duration),
     Pandemic(pandemic::Cmd),
+    FinishRemoteTrip(TripID),
 }
 
 impl Command {
@@ -32,12 +36,14 @@ impl Command {
         match self {
             Command::SpawnCar(ref create, _) => CommandType::Car(create.vehicle.id),
             Command::SpawnPed(ref create) => CommandType::Ped(create.id),
+            Command::StartTrip(id, _, _, _) => CommandType::StartTrip(*id),
             Command::UpdateCar(id) => CommandType::Car(*id),
             Command::UpdateLaggyHead(id) => CommandType::CarLaggyHead(*id),
             Command::UpdatePed(id) => CommandType::Ped(*id),
             Command::UpdateIntersection(id) => CommandType::Intersection(*id),
             Command::Savestate(_) => CommandType::Savestate,
             Command::Pandemic(ref p) => CommandType::Pandemic(p.clone()),
+            Command::FinishRemoteTrip(t) => CommandType::FinishRemoteTrip(*t),
         }
     }
 }
@@ -46,12 +52,14 @@ impl Command {
 // CommandType may exist at a time.
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub enum CommandType {
+    StartTrip(TripID),
     Car(CarID),
     CarLaggyHead(CarID),
     Ped(PedestrianID),
     Intersection(IntersectionID),
     Savestate,
     Pandemic(pandemic::Cmd),
+    FinishRemoteTrip(TripID),
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -203,6 +211,7 @@ impl Scheduler {
     // TODO Why not just implement Default on Path and use skip_serializing? Because we want to
     // serialize paths inside Router for live agents. We need to defer calling make_router and just
     // store the input in CreateCar.
+    // TODO Rethink all of this; probably broken by StartTrip.
     pub fn get_requests_for_savestate(&self) -> Vec<PathRequest> {
         let mut reqs = Vec::new();
         for (cmd, _) in self.queued_commands.values() {

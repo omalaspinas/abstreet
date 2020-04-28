@@ -1,5 +1,5 @@
 use crate::pandemic::{AnyTime, State};
-use crate::{CarID, Event, Person, PersonID, Scheduler, TripPhaseType};
+use crate::{CarID, Event, OffMapLocation, Person, PersonID, Scheduler, TripPhaseType};
 use geom::{Duration, Time};
 use map_model::{BuildingID, BusStopID};
 use rand::Rng;
@@ -16,6 +16,7 @@ pub struct PandemicModel {
     pop: BTreeMap<PersonID, State>,
 
     bldgs: SharedSpace<BuildingID>,
+    remote_bldgs: SharedSpace<OffMapLocation>,
     bus_stops: SharedSpace<BusStopID>,
     buses: SharedSpace<CarID>,
     person_to_bus: BTreeMap<PersonID, CarID>,
@@ -29,7 +30,6 @@ pub struct PandemicModel {
 pub enum Cmd {
     BecomeHospitalized(PersonID),
     BecomeQuarantined(PersonID),
-    CancelFutureTrips(PersonID),
 }
 
 // TODO Pretend handle_event and handle_cmd also take in some object that lets you do things like:
@@ -46,6 +46,7 @@ impl PandemicModel {
             pop: BTreeMap::new(),
 
             bldgs: SharedSpace::new(),
+            remote_bldgs: SharedSpace::new(),
             bus_stops: SharedSpace::new(),
             buses: SharedSpace::new(),
             person_to_bus: BTreeMap::new(),
@@ -163,11 +164,24 @@ impl PandemicModel {
                 if let Some(others) = self.bldgs.person_leaves_space(now, *person, *bldg) {
                     self.transmission(now, *person, others, scheduler);
                 } else {
-                    // TODO A person left a building, but they weren't inside of it? Not sure
-                    // what's happening here yet.
+                    panic!("{} left {}, but they weren't inside", person, bldg);
                 }
             }
-            Event::TripPhaseStarting(_, p, _, _, tpt) => {
+            Event::PersonEntersRemoteBuilding(person, loc) => {
+                self.remote_bldgs
+                    .person_enters_space(now, *person, loc.clone());
+            }
+            Event::PersonLeavesRemoteBuilding(person, loc) => {
+                if let Some(others) =
+                    self.remote_bldgs
+                        .person_leaves_space(now, *person, loc.clone())
+                {
+                    self.transmission(now, *person, others, scheduler);
+                } else {
+                    panic!("{} left {:?}, but they weren't inside", person, loc);
+                }
+            }
+            Event::TripPhaseStarting(_, p, _, tpt) => {
                 let person = *p;
                 match tpt {
                     TripPhaseType::WaitingForBus(_, stop) => {
@@ -197,6 +211,19 @@ impl PandemicModel {
                     }
                 }
             }
+            Event::PersonLeavesMap(_person, _, loc) => {
+                if let Some(_loc) = loc {
+                    // TODO Could make a SharedSpace for loc.parcel_id, representing buildings
+                    // off-map.
+                }
+            }
+            Event::PersonEntersMap(_person, _, loc) => {
+                if let Some(_loc) = loc {
+                    // TODO But we don't know how long the person spent at these parcels. They
+                    // could've taken tons of trips to other off-map parcels in between
+                    // PersonLeavesMap and PersonEntersMap.
+                }
+            }
             _ => {}
         }
     }
@@ -214,8 +241,6 @@ impl PandemicModel {
             Cmd::BecomeQuarantined(_person) => {
                 // self.quarantined.insert(person);
             }
-            // This is handled by the rest of the simulation
-            Cmd::CancelFutureTrips(_) => unreachable!(),
         }
     }
 

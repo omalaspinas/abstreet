@@ -9,26 +9,24 @@ mod tutorial;
 
 pub use self::tutorial::{Tutorial, TutorialPointer, TutorialState};
 use crate::app::App;
-use crate::challenges;
-use crate::challenges::challenges_picker;
-use crate::common::{CommonState, ContextualActions};
+use crate::challenges::Challenge;
+use crate::common::ContextualActions;
 use crate::edit::EditMode;
-use crate::game::{msg, State, Transition};
+use crate::game::{msg, Transition};
 use crate::helpers::ID;
 use crate::managed::WrappedComposite;
-use crate::pregame::main_menu;
-use crate::sandbox::{SandboxControls, SandboxMode, ScoreCard};
+use crate::sandbox::SandboxControls;
 use abstutil::Timer;
 use ezgui::{
     lctrl, Btn, Color, Composite, EventCtx, GeomBatch, GfxCtx, HorizontalAlignment, Key, Line,
-    Outcome, Text, VerticalAlignment, Widget,
+    VerticalAlignment, Widget,
 };
 use geom::{Duration, Polygon};
 use map_model::{EditCmd, EditIntersection, Map, MapEdits};
 use rand_xorshift::XorShiftRng;
 use sim::{Analytics, PersonID, Scenario, ScenarioGenerator};
 
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum GameplayMode {
     // TODO Maybe this should be "sandbox"
     // Map path
@@ -40,7 +38,7 @@ pub enum GameplayMode {
     FixTrafficSignals,
     // TODO Kinda gross. What stage in the tutorial?
     FixTrafficSignalsTutorial(usize),
-    OptimizeCommute(PersonID),
+    OptimizeCommute(PersonID, Duration),
 
     // current
     Tutorial(TutorialPointer),
@@ -74,8 +72,8 @@ pub trait GameplayState: downcast_rs::Downcast {
     fn has_speed(&self) -> bool {
         true
     }
-    fn get_agent_meter_params(&self) -> Option<Option<ScoreCard>> {
-        Some(None)
+    fn has_agent_meter(&self) -> bool {
+        true
     }
     fn has_minimap(&self) -> bool {
         true
@@ -93,7 +91,7 @@ impl GameplayMode {
             GameplayMode::FixTrafficSignalsTutorial(_) => {
                 abstutil::path_synthetic_map("signal_single")
             }
-            GameplayMode::OptimizeCommute(_) => abstutil::path_map("montlake"),
+            GameplayMode::OptimizeCommute(_, _) => abstutil::path_map("montlake"),
             GameplayMode::Tutorial(_) => abstutil::path_map("montlake"),
         }
     }
@@ -140,7 +138,7 @@ impl GameplayMode {
         } else if name == "5 weekdays repeated" {
             let s: Scenario =
                 abstutil::read_binary(abstutil::path_scenario(map.get_name(), "weekday"), timer);
-            s.repeat_days(5, true)
+            s.repeat_days(5)
         } else {
             let path = abstutil::path_scenario(map.get_name(), &name);
             match abstutil::maybe_read_binary(path.clone(), timer) {
@@ -252,7 +250,9 @@ impl GameplayMode {
             GameplayMode::FixTrafficSignals | GameplayMode::FixTrafficSignalsTutorial(_) => {
                 fix_traffic_signals::FixTrafficSignals::new(ctx, app, self.clone())
             }
-            GameplayMode::OptimizeCommute(p) => commute::OptimizeCommute::new(ctx, app, *p),
+            GameplayMode::OptimizeCommute(p, goal) => {
+                commute::OptimizeCommute::new(ctx, app, *p, *goal)
+            }
             GameplayMode::Tutorial(current) => Tutorial::new(ctx, app, *current),
         }
     }
@@ -317,16 +317,7 @@ fn challenge_controller(
     title: &str,
     extra_rows: Vec<Widget>,
 ) -> WrappedComposite {
-    // Scrape the description
-    let mut description = Vec::new();
-    'OUTER: for (_, stages) in challenges::all_challenges(true) {
-        for challenge in stages {
-            if challenge.gameplay == gameplay {
-                description = challenge.description.clone();
-                break 'OUTER;
-            }
-        }
-    }
+    let description = Challenge::find(&gameplay).0.description;
 
     let mut rows = vec![challenge_header(ctx, title)];
     rows.extend(extra_rows);
@@ -351,86 +342,4 @@ fn challenge_controller(
         "instructions",
         Box::new(move |_, _| Some(Transition::Push(msg("Challenge", description.clone())))),
     )
-}
-
-// TODO Haha, I'm already ditching this. We'll see what evolves instead.
-struct FinalScore {
-    composite: Composite,
-    mode: GameplayMode,
-    next: Option<GameplayMode>,
-}
-
-impl FinalScore {
-    fn new(
-        ctx: &mut EventCtx,
-        app: &App,
-        verdict: String,
-        mode: GameplayMode,
-        next: Option<GameplayMode>,
-    ) -> Box<dyn State> {
-        let mut txt = Text::from(Line("Final score").small_heading());
-        txt.add(Line(verdict));
-
-        let row = vec![
-            if next.is_some() {
-                Btn::text_fg("next challenge").build_def(ctx, None)
-            } else {
-                Widget::nothing()
-            },
-            Btn::text_fg("try again").build_def(ctx, None),
-            Btn::text_fg("back to challenges").build_def(ctx, None),
-        ];
-
-        Box::new(FinalScore {
-            composite: Composite::new(
-                Widget::col(vec![txt.draw(ctx), Widget::row(row).centered()])
-                    .bg(app.cs.panel_bg)
-                    .outline(10.0, Color::WHITE)
-                    .padding(10),
-            )
-            .aligned(HorizontalAlignment::Center, VerticalAlignment::Center)
-            .build(ctx),
-            mode,
-            next,
-        })
-    }
-}
-
-impl State for FinalScore {
-    fn event(&mut self, ctx: &mut EventCtx, app: &mut App) -> Transition {
-        match self.composite.event(ctx) {
-            Some(Outcome::Clicked(x)) => match x.as_ref() {
-                "next challenge" => {
-                    app.primary.clear_sim();
-                    Transition::PopThenReplace(Box::new(SandboxMode::new(
-                        ctx,
-                        app,
-                        self.next.clone().unwrap(),
-                    )))
-                }
-                "try again" => {
-                    app.primary.clear_sim();
-                    Transition::PopThenReplace(Box::new(SandboxMode::new(
-                        ctx,
-                        app,
-                        self.mode.clone(),
-                    )))
-                }
-                "back to challenges" => {
-                    app.primary.clear_sim();
-                    Transition::Clear(vec![main_menu(ctx, app), challenges_picker(ctx, app)])
-                }
-                _ => unreachable!(),
-            },
-            None => Transition::Keep,
-        }
-    }
-
-    fn draw(&self, g: &mut GfxCtx, app: &App) {
-        State::grey_out_map(g, app);
-
-        self.composite.draw(g);
-        // Still want to show hotkeys
-        CommonState::draw_osd(g, app, &None);
-    }
 }

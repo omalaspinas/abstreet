@@ -36,16 +36,7 @@ fn main() {
         num_agents: args.optional_parse("--num_agents", |s| s.parse()),
     };
     let mut opts = options::Options::default();
-    if args.enabled("--dev") {
-        opts.dev = true;
-        flags.sim_flags.rng_seed = Some(42);
-    }
-
-    // No random in wasm
-    #[cfg(target_arch = "wasm32")]
-    {
-        flags.sim_flags.rng_seed = Some(42);
-    }
+    opts.dev = args.enabled("--dev");
 
     if let Some(x) = args.optional("--color_scheme") {
         let mut ok = false;
@@ -83,7 +74,7 @@ fn main() {
     let mut mode = None;
     if let Some(x) = args.optional("--challenge") {
         let mut aliases = Vec::new();
-        'OUTER: for (_, stages) in challenges::all_challenges(true) {
+        'OUTER: for (_, stages) in challenges::Challenge::all(true) {
             for challenge in stages {
                 if challenge.alias == x {
                     flags.sim_flags.load = challenge.gameplay.map_path();

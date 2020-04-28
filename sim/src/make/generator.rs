@@ -1,12 +1,7 @@
-use crate::{
-    DrivingGoal, IndividTrip, PersonID, PersonSpec, Scenario, SidewalkSpot, SpawnTrip, BIKE_LENGTH,
-    MAX_CAR_LENGTH,
-};
+use crate::{DrivingGoal, IndividTrip, PersonID, PersonSpec, Scenario, SidewalkSpot, SpawnTrip};
 use abstutil::Timer;
 use geom::{Duration, Time};
-use map_model::{
-    BuildingID, DirectedRoadID, FullNeighborhoodInfo, LaneID, Map, PathConstraints, Position,
-};
+use map_model::{BuildingID, DirectedRoadID, FullNeighborhoodInfo, Map, PathConstraints};
 use rand::seq::SliceRandom;
 use rand::Rng;
 use rand_xorshift::XorShiftRng;
@@ -80,8 +75,24 @@ impl ScenarioGenerator {
         for s in &self.border_spawn_over_time {
             timer.next();
             s.spawn_peds(rng, &mut scenario, &neighborhoods, map, timer);
-            s.spawn_cars(rng, &mut scenario, &neighborhoods, map, timer);
-            s.spawn_bikes(rng, &mut scenario, &neighborhoods, map, timer);
+            s.spawn_vehicles(
+                s.num_cars,
+                PathConstraints::Car,
+                rng,
+                &mut scenario,
+                &neighborhoods,
+                map,
+                timer,
+            );
+            s.spawn_vehicles(
+                s.num_bikes,
+                PathConstraints::Bike,
+                rng,
+                &mut scenario,
+                &neighborhoods,
+                map,
+                timer,
+            );
         }
 
         timer.stop(format!("Generating scenario {}", self.scenario_name));
@@ -188,12 +199,11 @@ impl SpawnOverTime {
             {
                 scenario.people.push(PersonSpec {
                     id,
+                    orig_id: (0, 0),
                     trips: vec![IndividTrip {
                         depart,
-                        trip: SpawnTrip::MaybeUsingParkedCar(from_bldg, goal),
+                        trip: SpawnTrip::UsingParkedCar(from_bldg, goal),
                     }],
-                    has_car: true,
-                    car_initially_parked_at: Some(from_bldg),
                 });
                 return;
             }
@@ -208,12 +218,11 @@ impl SpawnOverTime {
             {
                 scenario.people.push(PersonSpec {
                     id,
+                    orig_id: (0, 0),
                     trips: vec![IndividTrip {
                         depart,
                         trip: SpawnTrip::UsingBike(start_spot, goal),
                     }],
-                    has_car: false,
-                    car_initially_parked_at: None,
                 });
                 return;
             }
@@ -233,12 +242,11 @@ impl SpawnOverTime {
                 {
                     scenario.people.push(PersonSpec {
                         id,
+                        orig_id: (0, 0),
                         trips: vec![IndividTrip {
                             depart,
                             trip: SpawnTrip::UsingTransit(start_spot, goal, route, stop1, stop2),
                         }],
-                        has_car: false,
-                        car_initially_parked_at: None,
                     });
                     return;
                 }
@@ -246,12 +254,11 @@ impl SpawnOverTime {
 
             scenario.people.push(PersonSpec {
                 id,
+                orig_id: (0, 0),
                 trips: vec![IndividTrip {
                     depart,
                     trip: SpawnTrip::JustWalking(start_spot, goal),
                 }],
-                has_car: false,
-                car_initially_parked_at: None,
             });
             return;
         }
@@ -274,7 +281,7 @@ impl BorderSpawnOverTime {
         }
 
         let start = if let Some(s) =
-            SidewalkSpot::start_at_border(self.start_from_border.src_i(map), map)
+            SidewalkSpot::start_at_border(self.start_from_border.src_i(map), None, map)
         {
             s
         } else {
@@ -297,6 +304,7 @@ impl BorderSpawnOverTime {
                     {
                         scenario.people.push(PersonSpec {
                             id,
+                            orig_id: (0, 0),
                             trips: vec![IndividTrip {
                                 depart,
                                 trip: SpawnTrip::UsingTransit(
@@ -307,8 +315,6 @@ impl BorderSpawnOverTime {
                                     stop2,
                                 ),
                             }],
-                            has_car: false,
-                            car_initially_parked_at: None,
                         });
                         continue;
                     }
@@ -316,109 +322,45 @@ impl BorderSpawnOverTime {
 
                 scenario.people.push(PersonSpec {
                     id,
+                    orig_id: (0, 0),
                     trips: vec![IndividTrip {
                         depart,
                         trip: SpawnTrip::JustWalking(start.clone(), goal),
                     }],
-                    has_car: false,
-                    car_initially_parked_at: None,
                 });
             }
         }
     }
 
-    fn spawn_cars(
+    fn spawn_vehicles(
         &self,
+        num: usize,
+        constraints: PathConstraints,
         rng: &mut XorShiftRng,
         scenario: &mut Scenario,
         neighborhoods: &HashMap<String, FullNeighborhoodInfo>,
         map: &Map,
         timer: &mut Timer,
     ) {
-        if self.num_cars == 0 {
-            return;
-        }
-        let lanes = pick_starting_lanes(
-            self.start_from_border.lanes(PathConstraints::Car, map),
-            false,
-            map,
-        );
-        if lanes.is_empty() {
-            timer.warn(format!(
-                "Can't start {} cars at border for {}",
-                self.num_cars, self.start_from_border
-            ));
-            return;
-        };
-
-        for _ in 0..self.num_cars {
+        for _ in 0..num {
             let depart = rand_time(rng, self.start_time, self.stop_time);
             if let Some(goal) =
                 self.goal
-                    .pick_driving_goal(PathConstraints::Car, map, &neighborhoods, rng, timer)
+                    .pick_driving_goal(constraints, map, &neighborhoods, rng, timer)
             {
                 let id = PersonID(scenario.people.len());
                 scenario.people.push(PersonSpec {
                     id,
+                    orig_id: (0, 0),
                     trips: vec![IndividTrip {
                         depart,
-                        trip: SpawnTrip::CarAppearing {
-                            // Safe because pick_starting_lanes checks for this
-                            start: Position::new(*lanes.choose(rng).unwrap(), MAX_CAR_LENGTH),
+                        trip: SpawnTrip::FromBorder {
+                            dr: self.start_from_border,
                             goal,
-                            is_bike: false,
+                            is_bike: constraints == PathConstraints::Bike,
+                            origin: None,
                         },
                     }],
-                    has_car: true,
-                    car_initially_parked_at: None,
-                });
-            }
-        }
-    }
-
-    fn spawn_bikes(
-        &self,
-        rng: &mut XorShiftRng,
-        scenario: &mut Scenario,
-        neighborhoods: &HashMap<String, FullNeighborhoodInfo>,
-        map: &Map,
-        timer: &mut Timer,
-    ) {
-        if self.num_bikes == 0 {
-            return;
-        }
-        let lanes = pick_starting_lanes(
-            self.start_from_border.lanes(PathConstraints::Bike, map),
-            true,
-            map,
-        );
-        if lanes.is_empty() {
-            timer.warn(format!(
-                "Can't start {} bikes at border for {}",
-                self.num_bikes, self.start_from_border
-            ));
-            return;
-        };
-
-        for _ in 0..self.num_bikes {
-            let depart = rand_time(rng, self.start_time, self.stop_time);
-            if let Some(goal) =
-                self.goal
-                    .pick_driving_goal(PathConstraints::Bike, map, &neighborhoods, rng, timer)
-            {
-                let id = PersonID(scenario.people.len());
-                scenario.people.push(PersonSpec {
-                    id,
-                    trips: vec![IndividTrip {
-                        depart,
-                        trip: SpawnTrip::CarAppearing {
-                            start: Position::new(*lanes.choose(rng).unwrap(), BIKE_LENGTH),
-                            goal,
-                            is_bike: true,
-                        },
-                    }],
-                    has_car: false,
-                    car_initially_parked_at: None,
                 });
             }
         }
@@ -447,7 +389,7 @@ impl OriginDestination {
             )),
             OriginDestination::GotoBldg(b) => Some(DrivingGoal::ParkNear(*b)),
             OriginDestination::EndOfRoad(dr) => {
-                let goal = DrivingGoal::end_at_border(*dr, constraints, map);
+                let goal = DrivingGoal::end_at_border(*dr, constraints, None, map);
                 if goal.is_none() {
                     timer.warn(format!(
                         "Can't spawn a {:?} ending at border {}; no appropriate lanes there",
@@ -472,7 +414,7 @@ impl OriginDestination {
                 map,
             )),
             OriginDestination::EndOfRoad(dr) => {
-                let goal = SidewalkSpot::end_at_border(dr.dst_i(map), map);
+                let goal = SidewalkSpot::end_at_border(dr.dst_i(map), None, map);
                 if goal.is_none() {
                     timer.warn(format!("Can't end_at_border for {} without a sidewalk", dr));
                 }
@@ -486,23 +428,4 @@ impl OriginDestination {
 fn rand_time(rng: &mut XorShiftRng, low: Time, high: Time) -> Time {
     assert!(high > low);
     Time::START_OF_DAY + Duration::seconds(rng.gen_range(low.inner_seconds(), high.inner_seconds()))
-}
-
-fn pick_starting_lanes(mut lanes: Vec<LaneID>, is_bike: bool, map: &Map) -> Vec<LaneID> {
-    let min_len = if is_bike { BIKE_LENGTH } else { MAX_CAR_LENGTH };
-    lanes.retain(|l| map.get_l(*l).length() > min_len);
-
-    if is_bike {
-        // If there's a choice between bike lanes and otherwise, always use the bike lanes.
-        let bike_lanes = lanes
-            .iter()
-            .filter(|l| map.get_l(**l).is_biking())
-            .cloned()
-            .collect::<Vec<LaneID>>();
-        if !bike_lanes.is_empty() {
-            lanes = bike_lanes;
-        }
-    }
-
-    lanes
 }

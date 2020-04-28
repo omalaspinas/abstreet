@@ -11,7 +11,10 @@ use ezgui::{
 };
 use geom::{Distance, Line, PolyLine, Polygon};
 use map_model::{BuildingID, IntersectionID, Map};
-use sim::{DrivingGoal, IndividTrip, PersonSpec, Scenario, SidewalkPOI, SidewalkSpot, SpawnTrip};
+use sim::{
+    DrivingGoal, IndividTrip, PersonSpec, Scenario, SidewalkPOI, SidewalkSpot, SpawnTrip,
+    TripEndpoint,
+};
 use std::collections::BTreeSet;
 
 pub struct ScenarioManager {
@@ -41,17 +44,21 @@ impl ScenarioManager {
             for (idx2, trip) in person.trips.iter().enumerate() {
                 num_trips += 1;
                 let idx = (idx1, idx2);
-                if let Some(b) = trip.trip.start_from_bldg() {
-                    trips_from_bldg.insert(b, idx);
+                match trip.trip.start(&app.primary.map) {
+                    TripEndpoint::Bldg(b) => {
+                        trips_from_bldg.insert(b, idx);
+                    }
+                    TripEndpoint::Border(i, _) => {
+                        trips_from_border.insert(i, idx);
+                    }
                 }
-                if let Some(i) = trip.trip.start_from_border() {
-                    trips_from_border.insert(i, idx);
-                }
-                if let Some(b) = trip.trip.end_at_bldg() {
-                    trips_to_bldg.insert(b, idx);
-                }
-                if let Some(i) = trip.trip.end_at_border() {
-                    trips_to_border.insert(i, idx);
+                match trip.trip.end(&app.primary.map) {
+                    TripEndpoint::Bldg(b) => {
+                        trips_to_bldg.insert(b, idx);
+                    }
+                    TripEndpoint::Border(i, _) => {
+                        trips_to_border.insert(i, idx);
+                    }
                 }
             }
         }
@@ -64,8 +71,7 @@ impl ScenarioManager {
             vec!["0", "1-2", "3-4", "..."],
         );
         let mut total_cars_needed = 0;
-        for (b, ppl) in scenario.parked_cars_per_bldg().consume() {
-            let count = ppl.len();
+        for (b, count) in scenario.count_parked_cars_per_bldg().consume() {
             total_cars_needed += count;
             let color = if count == 0 {
                 continue;
@@ -241,7 +247,7 @@ fn describe(person: &PersonSpec, trip: &IndividTrip, home: OD) -> String {
                 b.to_string()
             }
         }
-        DrivingGoal::Border(i, _) => {
+        DrivingGoal::Border(i, _, _) => {
             if OD::Border(*i) == home {
                 "HERE".to_string()
             } else {
@@ -257,7 +263,7 @@ fn describe(person: &PersonSpec, trip: &IndividTrip, home: OD) -> String {
                 b.to_string()
             }
         }
-        SidewalkPOI::Border(i) => {
+        SidewalkPOI::Border(i, _) => {
             if OD::Border(*i) == home {
                 "HERE".to_string()
             } else {
@@ -268,7 +274,7 @@ fn describe(person: &PersonSpec, trip: &IndividTrip, home: OD) -> String {
     };
 
     match &trip.trip {
-        SpawnTrip::CarAppearing {
+        SpawnTrip::VehicleAppearing {
             start,
             goal,
             is_bike,
@@ -280,8 +286,18 @@ fn describe(person: &PersonSpec, trip: &IndividTrip, home: OD) -> String {
             start.lane(),
             driving_goal(goal)
         ),
-        SpawnTrip::MaybeUsingParkedCar(start_bldg, goal) => format!(
-            "{} at {}: try to drive from {} to {}",
+        SpawnTrip::FromBorder {
+            dr, goal, is_bike, ..
+        } => format!(
+            "{} at {}: {} appears at {}, goes to {}",
+            person.id,
+            trip.depart,
+            if *is_bike { "bike" } else { "car" },
+            dr,
+            driving_goal(goal)
+        ),
+        SpawnTrip::UsingParkedCar(start_bldg, goal) => format!(
+            "{} at {}: drive from {} to {}",
             person.id,
             trip.depart,
             if OD::Bldg(*start_bldg) == home {
@@ -313,26 +329,33 @@ fn describe(person: &PersonSpec, trip: &IndividTrip, home: OD) -> String {
             sidewalk_spot(goal),
             route
         ),
+        SpawnTrip::Remote { from, to, .. } => format!(
+            "{} at {}: remote trip from {:?} to {:?}",
+            person.id, trip.depart, from, to
+        ),
     }
 }
 
 fn other_endpt(trip: &IndividTrip, home: OD, map: &Map) -> ID {
     let driving_goal = |goal: &DrivingGoal| match goal {
         DrivingGoal::ParkNear(b) => ID::Building(*b),
-        DrivingGoal::Border(i, _) => ID::Intersection(*i),
+        DrivingGoal::Border(i, _, _) => ID::Intersection(*i),
     };
     let sidewalk_spot = |spot: &SidewalkSpot| match &spot.connection {
         SidewalkPOI::Building(b) => ID::Building(*b),
-        SidewalkPOI::Border(i) => ID::Intersection(*i),
+        SidewalkPOI::Border(i, _) => ID::Intersection(*i),
         x => panic!("other_endpt for {:?}?", x),
     };
 
     let (from, to) = match &trip.trip {
-        SpawnTrip::CarAppearing { start, goal, .. } => (
+        SpawnTrip::VehicleAppearing { start, goal, .. } => (
             ID::Intersection(map.get_l(start.lane()).src_i),
             driving_goal(goal),
         ),
-        SpawnTrip::MaybeUsingParkedCar(start_bldg, goal) => {
+        SpawnTrip::FromBorder { dr, goal, .. } => {
+            (ID::Intersection(dr.src_i(map)), driving_goal(goal))
+        }
+        SpawnTrip::UsingParkedCar(start_bldg, goal) => {
             (ID::Building(*start_bldg), driving_goal(goal))
         }
         SpawnTrip::UsingBike(start, goal) => (sidewalk_spot(start), driving_goal(goal)),
@@ -340,6 +363,7 @@ fn other_endpt(trip: &IndividTrip, home: OD, map: &Map) -> ID {
         SpawnTrip::UsingTransit(start, goal, _, _, _) => {
             (sidewalk_spot(start), sidewalk_spot(goal))
         }
+        SpawnTrip::Remote { .. } => unimplemented!(),
     };
     let home_id = match home {
         OD::Bldg(b) => ID::Building(b),
@@ -442,10 +466,13 @@ impl DotMap {
             .flat_map(|p| {
                 p.trips.iter().filter_map(|trip| {
                     let (start, end) = match &trip.trip {
-                        SpawnTrip::CarAppearing { start, goal, .. } => {
+                        SpawnTrip::VehicleAppearing { start, goal, .. } => {
                             (start.pt(map), goal.pt(map))
                         }
-                        SpawnTrip::MaybeUsingParkedCar(b, goal) => {
+                        SpawnTrip::FromBorder { dr, goal, .. } => {
+                            (map.get_i(dr.src_i(map)).polygon.center(), goal.pt(map))
+                        }
+                        SpawnTrip::UsingParkedCar(b, goal) => {
                             (map.get_b(*b).polygon.center(), goal.pt(map))
                         }
                         SpawnTrip::UsingBike(start, goal) => {
@@ -457,6 +484,7 @@ impl DotMap {
                         SpawnTrip::UsingTransit(start, goal, _, _, _) => {
                             (start.sidewalk_pos.pt(map), goal.sidewalk_pos.pt(map))
                         }
+                        SpawnTrip::Remote { .. } => unimplemented!(),
                     };
                     Line::maybe_new(start, end)
                 })

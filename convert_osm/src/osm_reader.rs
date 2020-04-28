@@ -145,7 +145,8 @@ pub fn extract_osm(
                 RawBuilding {
                     polygon: Polygon::new(&deduped),
                     osm_tags: tags,
-                    parking: None,
+                    public_garage_name: None,
+                    num_parking_spots: 0,
                     amenities: BTreeSet::new(),
                 },
             );
@@ -287,6 +288,10 @@ fn tags_to_map(raw_tags: &[osm_xml::Tag]) -> BTreeMap<String, String> {
 
 fn is_road(tags: &BTreeMap<String, String>) -> bool {
     if !tags.contains_key(osm::HIGHWAY) {
+        return false;
+    }
+    // TODO Need to figure out how to ban cutting through in the contraction hierarchy.
+    if tags.get("access") == Some(&"private".to_string()) {
         return false;
     }
 

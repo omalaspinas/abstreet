@@ -16,7 +16,7 @@ fn seattle_input() {
         "../data/input/osm/Seattle.osm",
         "http://download.bbbike.org/osm/bbbike/Seattle/Seattle.osm.gz",
     );
-    // PSRC data comes from https://github.com/psrc/soundcast/releases
+    // Soundcast data comes from https://github.com/psrc/soundcast/releases
     download(
         "../data/input/parcels_urbansim.txt",
         "https://www.dropbox.com/s/t9oug9lwhdwfc04/psrc_2014.zip?dl=0",
@@ -50,10 +50,11 @@ pub fn osm_to_raw(name: &str) {
     println!("- Running convert_osm");
     let output = format!("../data/input/raw_maps/{}.bin", name);
     let map = convert_osm::convert(
-        &convert_osm::Flags {
+        convert_osm::Options {
             osm: format!("../data/input/osm/{}.osm", name),
             parking_shapes: Some("../data/input/blockface.bin".to_string()),
-            offstreet_parking: Some("../data/input/offstreet_parking.bin".to_string()),
+            public_offstreet_parking: Some("../data/input/offstreet_parking.bin".to_string()),
+            private_offstreet_parking: convert_osm::PrivateOffstreetParking::OnePerBldg,
             // TODO These're buggy.
             sidewalks: None,
             gtfs: Some("../data/input/google_transit".to_string()),
@@ -83,5 +84,5 @@ pub fn ensure_popdat_exists(use_fixes: bool) {
         crate::utils::raw_to_map("huge_seattle", use_fixes);
     }
 
-    crate::psrc::import_psrc_data();
+    crate::soundcast::import_data();
 }

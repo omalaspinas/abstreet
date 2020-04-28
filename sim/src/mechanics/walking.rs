@@ -111,7 +111,7 @@ impl WalkingSimState {
         now: Time,
         map: &Map,
         intersections: &mut IntersectionSimState,
-        parking: &ParkingSimState,
+        parking: &mut ParkingSimState,
         scheduler: &mut Scheduler,
         trips: &mut TripManager,
         transit: &mut TransitSimState,
@@ -161,10 +161,18 @@ impl WalkingSimState {
                                 self.peds.remove(&id);
                             }
                         }
-                        SidewalkPOI::Border(i) => {
+                        SidewalkPOI::Border(i, _) => {
                             self.peds_per_traversable
                                 .remove(ped.path.current_step().as_traversable(), ped.id);
-                            trips.ped_reached_border(now, ped.id, i, ped.total_blocked_time, map);
+                            trips.ped_reached_border(
+                                now,
+                                ped.id,
+                                i,
+                                ped.total_blocked_time,
+                                map,
+                                parking,
+                                scheduler,
+                            );
                             self.peds.remove(&id);
                         }
                         SidewalkPOI::BikeRack(driving_pos) => {
@@ -178,7 +186,7 @@ impl WalkingSimState {
                             scheduler.push(ped.state.get_end_time(), Command::UpdatePed(ped.id));
                         }
                         SidewalkPOI::SuddenlyAppear => unreachable!(),
-                        SidewalkPOI::DeferredParkingSpot(_, _) => unreachable!(),
+                        SidewalkPOI::DeferredParkingSpot => unreachable!(),
                     }
                 } else {
                     if let PathStep::Turn(t) = ped.path.current_step() {
@@ -228,7 +236,15 @@ impl WalkingSimState {
             PedState::EnteringBuilding(bldg, _) => {
                 self.peds_per_traversable
                     .remove(ped.path.current_step().as_traversable(), ped.id);
-                trips.ped_reached_building(now, ped.id, bldg, ped.total_blocked_time, map);
+                trips.ped_reached_building(
+                    now,
+                    ped.id,
+                    bldg,
+                    ped.total_blocked_time,
+                    map,
+                    parking,
+                    scheduler,
+                );
                 self.peds.remove(&id);
             }
             PedState::StartingToBike(ref spot, _, _) => {
@@ -240,6 +256,7 @@ impl WalkingSimState {
                     spot.clone(),
                     ped.total_blocked_time,
                     map,
+                    parking,
                     scheduler,
                 );
                 self.peds.remove(&id);

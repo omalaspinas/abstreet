@@ -1,6 +1,5 @@
 use crate::app::{App, PerMap};
 use crate::render::ExtraShapeID;
-use abstutil::prettyprint_usize;
 use ezgui::{Color, Line, Text, TextSpan};
 use geom::{Duration, Pt2D};
 use map_model::{AreaID, BuildingID, BusStopID, IntersectionID, LaneID, RoadID, TurnID};
@@ -99,6 +98,7 @@ pub fn nice_map_name(name: &str) -> &str {
         "downtown" => "Downtown Seattle",
         "huge_seattle" => "Seattle (entire area)",
         "intl_district" => "International District and I90",
+        "lakeslice" => "Lake Washington corridor",
         "montlake" => "Montlake and Eastlake",
         _ => name,
     }
@@ -120,17 +120,6 @@ pub fn cmp_duration_shorter(after: Duration, before: Duration) -> Vec<TextSpan> 
         ]
     } else {
         unreachable!()
-    }
-}
-
-// Fewer is better
-pub fn cmp_count_fewer(after: usize, before: usize) -> TextSpan {
-    if after < before {
-        Line(format!("{} fewer", prettyprint_usize(before - after))).fg(Color::GREEN)
-    } else if after > before {
-        Line(format!("{} more", prettyprint_usize(after - before))).fg(Color::RED)
-    } else {
-        Line("same")
     }
 }
 

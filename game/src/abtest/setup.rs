@@ -6,7 +6,7 @@ use crate::render::DrawMap;
 use ezgui::{Choice, EventCtx, GfxCtx, Wizard, WrappedWizard};
 use geom::Duration;
 use map_model::MapEdits;
-use sim::{ABTest, Scenario, SimFlags, SimOptions};
+use sim::{ABTest, AlertHandler, Scenario, SimFlags, SimOptions};
 
 pub struct PickABTest;
 impl PickABTest {
@@ -111,9 +111,6 @@ fn launch_test(test: &ABTest, app: &mut App, ctx: &mut EventCtx) -> ABTestMode {
 
             {
                 timer.start("load primary");
-                if app.primary.current_flags.sim_flags.rng_seed.is_none() {
-                    app.primary.current_flags.sim_flags.rng_seed = Some(42);
-                }
                 app.primary.current_flags.sim_flags.opts.run_name =
                     format!("{} with {}", test.test_name, test.edits1_name);
                 app.primary.current_flags.sim_flags.opts.savestate_every = None;
@@ -162,11 +159,12 @@ fn launch_test(test: &ABTest, app: &mut App, ctx: &mut EventCtx) -> ABTestMode {
                                     .sim_flags
                                     .opts
                                     .recalc_lanechanging,
-                                clear_laggy_head_early: current_flags
+                                break_turn_conflict_cycles: current_flags
                                     .sim_flags
                                     .opts
-                                    .clear_laggy_head_early,
+                                    .break_turn_conflict_cycles,
                                 enable_pandemic_model: None,
+                                alerts: AlertHandler::Print,
                             },
                         },
                         ..current_flags.clone()

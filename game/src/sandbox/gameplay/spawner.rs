@@ -19,7 +19,7 @@ use rand::Rng;
 use rand_xorshift::XorShiftRng;
 use sim::{
     BorderSpawnOverTime, DrivingGoal, OriginDestination, Scenario, ScenarioGenerator, SidewalkSpot,
-    Sim, TripSpawner, TripSpec, VehicleType,
+    Sim, TripEndpoint, TripSpawner, TripSpec,
 };
 
 const SMALL_DT: Duration = Duration::const_seconds(0.1);
@@ -104,6 +104,7 @@ impl State for AgentSpawner {
                     if let Some(g) = DrivingGoal::end_at_border(
                         map.get_i(to).some_incoming_road(map),
                         constraints,
+                        None,
                         map,
                     ) {
                         g.goal_pos(constraints, map)
@@ -140,7 +141,7 @@ impl State for AgentSpawner {
                 &mut spawner,
                 &mut rng,
             );
-            sim.flush_spawner(spawner, map, &mut Timer::new("spawn trip"), false);
+            sim.flush_spawner(spawner, map, &mut Timer::new("spawn trip"));
             sim.normal_step(map, SMALL_DT);
             app.recalculate_current_selection(ctx);
             if let Some(e) = err {
@@ -181,6 +182,7 @@ pub fn spawn_agents_around(i: IntersectionID, app: &mut App) {
         i, app.primary.current_flags.sim_flags.rng_seed
     ));
 
+    let now = sim.time();
     for l in &map.get_i(i).incoming_lanes {
         let lane = map.get_l(*l);
         if lane.is_driving() || lane.is_biking() {
@@ -193,29 +195,34 @@ pub fn spawn_agents_around(i: IntersectionID, app: &mut App) {
                 if vehicle_spec.length > lane.length() {
                     continue;
                 }
+                let person = sim.random_person(
+                    Scenario::rand_ped_speed(&mut rng),
+                    vec![vehicle_spec.clone()],
+                );
                 spawner.schedule_trip(
-                    sim.random_person(vehicle_spec.vehicle_type == VehicleType::Car),
-                    sim.time(),
-                    TripSpec::CarAppearing {
+                    person,
+                    now,
+                    TripSpec::VehicleAppearing {
                         start_pos: Position::new(
                             lane.id,
                             Scenario::rand_dist(&mut rng, vehicle_spec.length, lane.length()),
                         ),
-                        vehicle_spec,
                         goal: DrivingGoal::ParkNear(
                             map.all_buildings().choose(&mut rng).unwrap().id,
                         ),
-                        ped_speed: Scenario::rand_ped_speed(&mut rng),
+                        use_vehicle: person.vehicles[0].id,
+                        retry_if_no_room: false,
+                        origin: None,
                     },
+                    TripEndpoint::Border(lane.src_i, None),
                     map,
-                    sim,
                 );
             }
         } else if lane.is_sidewalk() {
             for _ in 0..5 {
                 spawner.schedule_trip(
-                    sim.random_person(false),
-                    sim.time(),
+                    sim.random_person(Scenario::rand_ped_speed(&mut rng), Vec::new()),
+                    now,
                     TripSpec::JustWalking {
                         start: SidewalkSpot::suddenly_appear(
                             lane.id,
@@ -226,16 +233,15 @@ pub fn spawn_agents_around(i: IntersectionID, app: &mut App) {
                             map.all_buildings().choose(&mut rng).unwrap().id,
                             map,
                         ),
-                        ped_speed: Scenario::rand_ped_speed(&mut rng),
                     },
+                    TripEndpoint::Border(lane.src_i, None),
                     map,
-                    sim,
                 );
             }
         }
     }
 
-    sim.flush_spawner(spawner, map, &mut timer, false);
+    sim.flush_spawner(spawner, map, &mut timer);
     sim.normal_step(map, SMALL_DT);
 }
 
@@ -248,56 +254,54 @@ fn schedule_trip(
     spawner: &mut TripSpawner,
     rng: &mut XorShiftRng,
 ) -> Option<String> {
+    let now = sim.time();
     match src {
         Source::WalkFromBldg(_) | Source::WalkFromSidewalk(_) => {
-            let start = match src {
-                Source::WalkFromBldg(b) => SidewalkSpot::building(*b, map),
-                Source::WalkFromSidewalk(pos) => {
-                    SidewalkSpot::suddenly_appear(pos.lane(), pos.dist_along(), map)
+            let (start, trip_start) = match src {
+                Source::WalkFromBldg(b) => {
+                    (SidewalkSpot::building(*b, map), TripEndpoint::Bldg(*b))
                 }
+                Source::WalkFromSidewalk(pos) => (
+                    SidewalkSpot::suddenly_appear(pos.lane(), pos.dist_along(), map),
+                    TripEndpoint::Border(map.get_l(pos.lane()).src_i, None),
+                ),
                 _ => unreachable!(),
             };
             let goal = match raw_goal {
                 Goal::Building(to) => SidewalkSpot::building(to, map),
                 Goal::Border(to) => {
-                    if let Some(goal) = SidewalkSpot::end_at_border(to, map) {
+                    if let Some(goal) = SidewalkSpot::end_at_border(to, None, map) {
                         goal
                     } else {
                         return Some(format!("Can't end a walking trip at {}; no sidewalks", to));
                     }
                 }
             };
-            let ped_speed = Scenario::rand_ped_speed(rng);
             if let Some((stop1, stop2, route)) =
                 map.should_use_transit(start.sidewalk_pos, goal.sidewalk_pos)
             {
                 println!("Using {} from {} to {}", route, stop1, stop2);
                 spawner.schedule_trip(
-                    sim.random_person(false),
-                    sim.time(),
+                    sim.random_person(Scenario::rand_ped_speed(rng), Vec::new()),
+                    now,
                     TripSpec::UsingTransit {
                         start,
                         goal,
                         route,
                         stop1,
                         stop2,
-                        ped_speed,
                     },
+                    trip_start,
                     map,
-                    sim,
                 );
             } else {
                 println!("Not using transit");
                 spawner.schedule_trip(
-                    sim.random_person(false),
-                    sim.time(),
-                    TripSpec::JustWalking {
-                        start,
-                        goal,
-                        ped_speed,
-                    },
+                    sim.random_person(Scenario::rand_ped_speed(rng), Vec::new()),
+                    now,
+                    TripSpec::JustWalking { start, goal },
+                    trip_start,
                     map,
-                    sim,
                 );
             }
         }
@@ -308,6 +312,7 @@ fn schedule_trip(
                     if let Some(g) = DrivingGoal::end_at_border(
                         map.get_i(to).some_incoming_road(map),
                         PathConstraints::Bike,
+                        None,
                         map,
                     ) {
                         g
@@ -316,17 +321,20 @@ fn schedule_trip(
                     }
                 }
             };
+            let person = sim.random_person(
+                Scenario::rand_ped_speed(rng),
+                vec![Scenario::rand_bike(rng)],
+            );
             spawner.schedule_trip(
-                sim.random_person(false),
-                sim.time(),
+                person,
+                now,
                 TripSpec::UsingBike {
+                    bike: person.vehicles[0].id,
                     start: SidewalkSpot::building(*b, map),
-                    vehicle: Scenario::rand_bike(rng),
                     goal,
-                    ped_speed: Scenario::rand_ped_speed(rng),
                 },
+                TripEndpoint::Bldg(*b),
                 map,
-                sim,
             );
         }
         _ => {
@@ -337,6 +345,7 @@ fn schedule_trip(
                     if let Some(g) = DrivingGoal::end_at_border(
                         map.get_i(to).some_incoming_road(map),
                         PathConstraints::Car,
+                        None,
                         map,
                     ) {
                         g
@@ -347,18 +356,23 @@ fn schedule_trip(
             };
             match src {
                 Source::Drive(from) => {
-                    if let Some(start_pos) = TripSpec::spawn_car_at(*from, map) {
+                    if let Some(start_pos) = TripSpec::spawn_vehicle_at(*from, false, map) {
+                        let person = sim.random_person(
+                            Scenario::rand_ped_speed(rng),
+                            vec![Scenario::rand_car(rng)],
+                        );
                         spawner.schedule_trip(
-                            sim.random_person(true),
-                            sim.time(),
-                            TripSpec::CarAppearing {
+                            person,
+                            now,
+                            TripSpec::VehicleAppearing {
                                 start_pos,
-                                vehicle_spec: Scenario::rand_car(rng),
                                 goal,
-                                ped_speed: Scenario::rand_ped_speed(rng),
+                                retry_if_no_room: false,
+                                use_vehicle: person.vehicles[0].id,
+                                origin: None,
                             },
+                            TripEndpoint::Border(map.get_l(from.lane()).src_i, None),
                             map,
-                            sim,
                         );
                     } else {
                         return Some(format!("Can't make a car appear at {:?}", from));

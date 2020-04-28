@@ -7,7 +7,8 @@ use geom::Duration;
 use map_model::Map;
 use maplit::btreemap;
 use sim::{
-    AgentID, CarID, PedestrianID, Person, PersonID, PersonState, TripID, TripResult, VehicleType,
+    AgentID, CarID, ParkingSpot, PedestrianID, Person, PersonID, PersonState, TripID, TripResult,
+    VehicleType,
 };
 use std::collections::BTreeMap;
 
@@ -41,14 +42,24 @@ pub fn trips(
                     wheres_waldo = false;
                     rows.push(current_status(ctx, person, map));
                 }
-
-                (
-                    "future",
-                    Color::hex("#4CA7E9"),
-                    open_trips
-                        .get(t)
-                        .map(|_| trip::future(ctx, app, *t, details)),
-                )
+                let start_time = sim.trip_info(*t).0;
+                if sim.time() > start_time {
+                    (
+                        "delayed start",
+                        Color::YELLOW,
+                        open_trips
+                            .get(t)
+                            .map(|_| trip::future(ctx, app, *t, details)),
+                    )
+                } else {
+                    (
+                        "future",
+                        Color::hex("#4CA7E9"),
+                        open_trips
+                            .get(t)
+                            .map(|_| trip::future(ctx, app, *t, details)),
+                    )
+                }
             }
             TripResult::Ok(a) => {
                 assert!(wheres_waldo);
@@ -61,11 +72,25 @@ pub fn trips(
                         .map(|_| trip::ongoing(ctx, app, *t, a, details)),
                 )
             }
+            TripResult::RemoteTrip => {
+                assert!(wheres_waldo);
+                wheres_waldo = false;
+                (
+                    "ongoing (off-map)",
+                    Color::hex("#7FFA4D"),
+                    // TODO Details about an ongoing remote trip?
+                    None,
+                )
+            }
             TripResult::ModeChange => {
                 // TODO No details. Weird case.
                 assert!(wheres_waldo);
                 wheres_waldo = false;
-                ("ongoing", Color::hex("#7FFA4D"), None)
+                (
+                    "ongoing",
+                    Color::hex("#7FFA4D"),
+                    open_trips.get(t).map(|_| Widget::nothing()),
+                )
             }
             TripResult::TripDone => {
                 assert!(wheres_waldo);
@@ -79,7 +104,11 @@ pub fn trips(
             }
             TripResult::TripAborted => {
                 // Aborted trips can happen anywhere in the schedule right now
-                ("cancelled", Color::hex("#EB3223"), None)
+                (
+                    "broken",
+                    Color::hex("#EB3223"),
+                    open_trips.get(t).map(|_| trip::aborted(ctx, app, *t)),
+                )
             }
             TripResult::TripDoesntExist => unreachable!(),
         };
@@ -223,11 +252,35 @@ pub fn bio(
         );
     }
 
-    if let Some(car) = app.primary.sim.get_parked_car_owned_by(id) {
-        rows.push(Btn::text_bg2(format!("Owner of {}", car)).build_def(ctx, None));
-        details
-            .hyperlinks
-            .insert(format!("Owner of {}", car), Tab::ParkedCar(car));
+    let person = app.primary.sim.get_person(id);
+    let mut has_bike = false;
+    for v in &person.vehicles {
+        if v.vehicle_type == VehicleType::Bike {
+            has_bike = true;
+        } else {
+            if app.primary.sim.lookup_parked_car(v.id).is_some() {
+                rows.push(
+                    Btn::text_bg2(format!("Owner of {} (parked)", v.id)).build_def(ctx, None),
+                );
+                details
+                    .hyperlinks
+                    .insert(format!("Owner of {} (parked)", v.id), Tab::ParkedCar(v.id));
+            } else if let PersonState::Trip(t) = person.state {
+                match app.primary.sim.trip_to_agent(t) {
+                    TripResult::Ok(AgentID::Car(x)) if x == v.id => {
+                        rows.push(format!("Owner of {} (currently driving)", v.id).draw_text(ctx));
+                    }
+                    _ => {
+                        rows.push(format!("Owner of {} (off-map)", v.id).draw_text(ctx));
+                    }
+                }
+            } else {
+                rows.push(format!("Owner of {} (off-map)", v.id).draw_text(ctx));
+            }
+        }
+    }
+    if has_bike {
+        rows.push("Owns a bike".draw_text(ctx));
     }
 
     rows
@@ -269,24 +322,71 @@ pub fn crowd(
     rows
 }
 
-pub fn parked_car(ctx: &EventCtx, app: &App, details: &mut Details, id: CarID) -> Vec<Widget> {
+pub fn parked_car(
+    ctx: &mut EventCtx,
+    app: &App,
+    details: &mut Details,
+    id: CarID,
+    is_paused: bool,
+) -> Vec<Widget> {
     let mut rows = vec![];
 
     rows.push(Widget::row(vec![
         Line(format!("Parked car #{}", id.0))
             .small_heading()
             .draw(ctx),
-        header_btns(ctx),
+        Widget::row(vec![
+            // Little indirect, but the handler of this action is actually the ContextualActions
+            // for SandboxMode.
+            if is_paused {
+                Btn::svg_def("../data/system/assets/tools/location.svg")
+                    .build(ctx, "follow", hotkey(Key::F))
+                    .margin(5)
+            } else {
+                // TODO Blink
+                Btn::svg_def("../data/system/assets/tools/location.svg")
+                    .normal_color(RewriteColor::ChangeAll(Color::hex("#7FFA4D")))
+                    .build(ctx, "unfollow", hotkey(Key::F))
+                    .margin(5)
+            },
+            Btn::plaintext("X").build(ctx, "close info", hotkey(Key::Escape)),
+        ])
+        .align_right(),
     ]));
 
     // TODO how long idle, prev trips, next trips, etc
 
-    if let Some(p) = app.primary.sim.get_owner_of_car(id) {
-        rows.push(Btn::text_bg2(format!("Owned by {}", p)).build_def(ctx, None));
-        details.hyperlinks.insert(
-            format!("Owned by {}", p),
-            Tab::PersonTrips(p, BTreeMap::new()),
-        );
+    let p = app.primary.sim.get_owner_of_car(id).unwrap();
+    rows.push(Btn::text_bg2(format!("Owned by {}", p)).build_def(ctx, None));
+    details.hyperlinks.insert(
+        format!("Owned by {}", p),
+        Tab::PersonTrips(p, BTreeMap::new()),
+    );
+
+    if let Some(p) = app.primary.sim.lookup_parked_car(id) {
+        match p.spot {
+            ParkingSpot::Onstreet(_, _) => {
+                ctx.canvas.center_on_map_pt(
+                    app.primary
+                        .sim
+                        .canonical_pt_for_agent(AgentID::Car(id), &app.primary.map)
+                        .unwrap(),
+                );
+            }
+            ParkingSpot::Offstreet(b, _) => {
+                ctx.canvas
+                    .center_on_map_pt(app.primary.map.get_b(b).polygon.center());
+                rows.push(
+                    format!(
+                        "Parked inside {}",
+                        app.primary.map.get_b(b).get_name(&app.primary.map)
+                    )
+                    .draw_text(ctx),
+                );
+            }
+        }
+    } else {
+        rows.push("No longer parked".draw_text(ctx));
     }
 
     rows
@@ -339,7 +439,6 @@ fn header(
             },
         ),
         PersonState::OffMap => (None, ("off map", None)),
-        PersonState::Limbo => (None, ("in limbo", None)),
     };
 
     rows.push(Widget::row(vec![
@@ -400,9 +499,6 @@ fn current_status(ctx: &EventCtx, person: &Person, map: &Map) -> Widget {
         }
         PersonState::Trip(_) => unreachable!(),
         PersonState::OffMap => "Currently outside the map boundaries".draw_text(ctx),
-        PersonState::Limbo => "Currently in limbo -- they broke out of the Matrix! Woops. (A bug \
-                               occurred)"
-            .draw_text(ctx),
     })
     .margin_vert(16)
 }

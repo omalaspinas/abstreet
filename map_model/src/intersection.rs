@@ -68,12 +68,9 @@ impl Intersection {
             .collect()
     }
 
+    // Strict for bikes. If there are bike lanes, not allowed to use other lanes.
     pub fn get_outgoing_lanes(&self, map: &Map, constraints: PathConstraints) -> Vec<LaneID> {
-        self.outgoing_lanes
-            .iter()
-            .filter(|l| constraints.can_use(map.get_l(**l), map))
-            .cloned()
-            .collect()
+        constraints.filter_lanes(&self.outgoing_lanes, map)
     }
 
     pub fn get_zorder(&self, map: &Map) -> isize {
