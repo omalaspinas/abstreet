@@ -1,7 +1,7 @@
 use crate::mechanics::car::{Car, CarState};
 use crate::mechanics::Queue;
 use crate::{
-    ActionAtEnd, AgentID, AgentProperties, AlertLocation, CarID, Command, CreateCar,
+    ActionAtEnd, AgentID, AgentProperties, CarID, Command, CreateCar,
     DistanceInterval, DrawCarInput, Event, IntersectionSimState, ParkedCar, ParkingSimState,
     PersonID, Scheduler, TimeInterval, TransitSimState, TripManager, TripMode, TripPositions,
     UnzoomedAgent, Vehicle, WalkingSimState, FOLLOWING_DISTANCE,
@@ -470,12 +470,6 @@ impl DrivingSimState {
                     }
                     Some(ActionAtEnd::StartParking(spot)) => {
                         car.total_blocked_time += now - blocked_since;
-                        if let crate::ParkingSpot::Offstreet(b, _) = spot {
-                            self.events.push(Event::Alert(
-                                AlertLocation::Building(b),
-                                format!("car entering bldg"),
-                            ));
-                        }
                         car.state = CarState::Parking(
                             our_dist,
                             spot,
