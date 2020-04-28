@@ -71,7 +71,7 @@ pub struct SimOptions {
     pub run_name: String,
     pub savestate_every: Option<Duration>,
     pub use_freeform_policy_everywhere: bool,
-    pub disable_block_the_box: bool,
+    pub dont_block_the_box: bool,
     pub recalc_lanechanging: bool,
     pub break_turn_conflict_cycles: bool,
     pub enable_pandemic_model: Option<XorShiftRng>,
@@ -100,9 +100,9 @@ impl SimOptions {
             run_name: run_name.to_string(),
             savestate_every: None,
             use_freeform_policy_everywhere: false,
-            disable_block_the_box: false,
+            dont_block_the_box: true,
             recalc_lanechanging: true,
-            break_turn_conflict_cycles: false,
+            break_turn_conflict_cycles: true,
             enable_pandemic_model: None,
             alerts: AlertHandler::Print,
         }
@@ -124,7 +124,7 @@ impl Sim {
                 map,
                 &mut scheduler,
                 opts.use_freeform_policy_everywhere,
-                opts.disable_block_the_box,
+                opts.dont_block_the_box,
                 opts.break_turn_conflict_cycles,
             ),
             transit: TransitSimState::new(),
@@ -501,10 +501,6 @@ impl Sim {
                         SidewalkPOI::Building(b1),
                         SidewalkPOI::ParkingSpot(ParkingSpot::Offstreet(b2, idx)),
                     ) if b1 == b2 => {
-                        events.push(Event::Alert(
-                            AlertLocation::Building(*b1),
-                            format!("car leaving bldg"),
-                        ));
                         self.trips.ped_reached_parking_spot(
                             self.time,
                             create_ped.id,
@@ -1134,7 +1130,8 @@ impl Sim {
     // For intersections with an agent waiting beyond some threshold, return when they started
     // waiting. Sorted by earliest waiting (likely the root cause of gridlock).
     pub fn delayed_intersections(&self, threshold: Duration) -> Vec<(IntersectionID, Time)> {
-        self.intersections.find_gridlock(self.time, threshold)
+        self.intersections
+            .delayed_intersections(self.time, threshold)
     }
 
     pub fn bldg_to_people(&self, b: BuildingID) -> Vec<PersonID> {
