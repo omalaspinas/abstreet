@@ -45,6 +45,7 @@ pub struct Map {
     pathfinder: Option<Pathfinder>,
     pathfinder_dirty: bool,
 
+    city_name: String,
     name: String,
     edits: MapEdits,
 }
@@ -103,6 +104,7 @@ impl Map {
             turn_lookup: Vec::new(),
             pathfinder: None,
             pathfinder_dirty: false,
+            city_name: "blank city".to_string(),
             name: "blank".to_string(),
             edits: MapEdits::new("blank"),
         }
@@ -112,7 +114,7 @@ impl Map {
         timer.start("raw_map to InitialMap");
         let gps_bounds = raw.gps_bounds.clone();
         let bounds = gps_bounds.to_bounds();
-        let initial_map = make::initial::InitialMap::new(raw.name.clone(), &raw, &bounds, timer);
+        let initial_map = make::initial::InitialMap::new(&raw, &bounds, timer);
         timer.stop("raw_map to InitialMap");
 
         timer.start("InitialMap to half of Map");
@@ -431,6 +433,10 @@ impl Map {
         &self.bounds
     }
 
+    pub fn get_city_name(&self) -> &String {
+        &self.city_name
+    }
+
     pub fn get_name(&self) -> &String {
         &self.name
     }
@@ -673,6 +679,18 @@ impl Map {
     pub fn get_driving_side(&self) -> DrivingSide {
         self.driving_side
     }
+
+    // TODO Sort of a temporary hack
+    pub fn hack_override_offstreet_spots(&mut self, spots_per_bldg: usize) {
+        for b in &mut self.buildings {
+            if let Some(ref mut p) = b.parking {
+                // Leave the parking garages alone
+                if p.num_spots == 1 {
+                    p.num_spots = spots_per_bldg;
+                }
+            }
+        }
+    }
 }
 
 impl Map {
@@ -818,6 +836,7 @@ fn make_half_map(
         turn_lookup: Vec::new(),
         pathfinder: None,
         pathfinder_dirty: false,
+        city_name: raw.city_name.clone(),
         name: raw.name.clone(),
         edits: MapEdits::new(&raw.name),
     };
