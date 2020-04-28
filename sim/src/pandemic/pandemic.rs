@@ -1,10 +1,9 @@
 use crate::pandemic::{AnyTime, State};
 use crate::{
     CarID, Command, Event, OffMapLocation, Person, PersonID, Scheduler, TripPhaseType, TripMode,
-    WalkingSimState,
 };
-use geom::{Bounds, Distance, Duration, Pt2D, Time};
-use map_model::{BuildingID, BusStopID, LaneID, Map, Traversable};
+use geom::{Duration, Time};
+use map_model::{BuildingID, BusStopID, LaneID, Traversable};
 use rand::Rng;
 use rand_xorshift::XorShiftRng;
 use serde_derive::{Deserialize, Serialize};
@@ -17,8 +16,6 @@ use std::collections::BTreeMap;
 #[derive(Clone)]
 pub struct PandemicModel {
     pop: BTreeMap<PersonID, State>,
-    spacing: Distance,
-    delta_t: Duration,
 
     bldgs: SharedSpace<BuildingID>,
     sidewalks: SharedSpace<LaneID>,
@@ -64,19 +61,11 @@ impl From<(State, PersonID)> for Cmd {
 
 impl PandemicModel {
     pub fn new(
-        bounds: &Bounds,
-        spacing: Distance,
-        delta_t: Duration,
         rng: XorShiftRng,
     ) -> PandemicModel {
-        let dx = spacing.inner_meters();
-        let nx = (bounds.width() / dx).ceil() as usize;
-        let ny = (bounds.height() / dx).ceil() as usize;
 
         PandemicModel {
             pop: BTreeMap::new(),
-            spacing: spacing,
-            delta_t: delta_t,
 
             bldgs: SharedSpace::new(),
             sidewalks: SharedSpace::new(),
@@ -312,8 +301,6 @@ impl PandemicModel {
         &mut self,
         now: Time,
         cmd: Cmd,
-        walkers: &WalkingSimState,
-        map: &Map,
         scheduler: &mut Scheduler,
     ) {
         assert!(self.initialized);

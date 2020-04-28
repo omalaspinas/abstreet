@@ -131,9 +131,6 @@ impl Sim {
             trips: TripManager::new(),
             pandemic: if let Some(rng) = opts.enable_pandemic_model {
                 Some(PandemicModel::new(
-                    map.get_bounds(),
-                    Distance::meters(1.0),
-                    Duration::seconds(10.0),
                     rng,
                 ))
             } else {
@@ -573,8 +570,6 @@ impl Sim {
                 self.pandemic.as_mut().unwrap().handle_cmd(
                     self.time,
                     cmd,
-                    &self.walking,
-                    map,
                     &mut self.scheduler,
                 );
             }
