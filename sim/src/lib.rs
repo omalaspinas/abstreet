@@ -3,7 +3,6 @@ mod events;
 mod make;
 mod mechanics;
 mod pandemic;
-mod grid;
 mod render;
 mod router;
 mod scheduler;
@@ -22,7 +21,6 @@ pub(crate) use self::mechanics::{
     DrivingSimState, IntersectionSimState, ParkingSimState, WalkingSimState,
 };
 pub(crate) use self::pandemic::PandemicModel;
-pub(crate) use self::grid::Grid;
 pub(crate) use self::router::{ActionAtEnd, Router};
 pub(crate) use self::scheduler::{Command, Scheduler};
 pub use self::sim::{AgentProperties, AlertHandler, Sim, SimOptions};

@@ -1,6 +1,6 @@
 use crate::pandemic::{AnyTime, State};
 use crate::{
-    CarID, Command, Event, Grid, OffMapLocation, Person, PersonID, Scheduler, TripPhaseType, TripMode,
+    CarID, Command, Event, OffMapLocation, Person, PersonID, Scheduler, TripPhaseType, TripMode,
     WalkingSimState,
 };
 use geom::{Bounds, Distance, Duration, Pt2D, Time};
@@ -17,7 +17,6 @@ use std::collections::BTreeMap;
 #[derive(Clone)]
 pub struct PandemicModel {
     pop: BTreeMap<PersonID, State>,
-    concentration: Grid,
     spacing: Distance,
     delta_t: Duration,
 
@@ -36,7 +35,6 @@ pub struct PandemicModel {
 // TODO Transition/Transmission may be abit rough see if we change that in the future
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub enum Cmd {
-    Poll,
     BecomeHospitalized(PersonID),
     BecomeQuarantined(PersonID),
     CancelFutureTrips(PersonID),
@@ -77,7 +75,6 @@ impl PandemicModel {
 
         PandemicModel {
             pop: BTreeMap::new(),
-            concentration: Grid::zero(nx, ny),
             spacing: spacing,
             delta_t: delta_t,
 
@@ -221,6 +218,9 @@ impl PandemicModel {
                 }
             }
             Event::AgentLeavesTraversable(person, tm, t) => {
+                // TODO at the moment we model sidewalks as buildings.
+                // We could make that better by simulating people crossing
+                // each other
                 match *tm {
                     TripMode::Walk => 
                         if let Some(p) = person {
@@ -308,47 +308,6 @@ impl PandemicModel {
         }
     }
 
-    fn pedestrian_transmission(
-        &mut self,
-        now: Time,
-        sane_walkers: &Vec<(PersonID, Pt2D)>,
-        bounds: &Bounds,
-        dx: f64,
-        scheduler: &mut Scheduler,
-    ) {
-        for (p, w) in sane_walkers {
-            let x = ((w.x() - bounds.min_x) / dx).floor() as usize;
-            let y = ((w.y() - bounds.min_y) / dx).floor() as usize;
-
-            // TODO must think about how to make the transition more realistic
-            // probably an erf function?
-            if self.rng.gen_bool(self.concentration[(x, y)] / 100.0) {
-                // When poeple become expose
-                let state = self.pop.remove(&p).unwrap();
-                assert_eq!(
-                    state.get_event_time().unwrap().inner_seconds(),
-                    std::f64::INFINITY
-                );
-                // The probability of transmission is handled in the if above
-                let state = state.start_now(AnyTime::from(now), &mut self.rng).unwrap();
-                let state = match state {
-                    (s, Some(t)) => {
-                        scheduler.push(t, Command::Pandemic(Cmd::from((s.clone(), *p))));
-                        s
-                    }
-                    (s, None) => s,
-                };
-                self.pop.insert(*p, state);
-                // if self.rng.gen_bool(0.1) {
-                //     scheduler.push(
-                //         now + self.rand_duration(Duration::hours(1), Duration::hours(3)),
-                //         Command::Pandemic(Cmd::BecomeHospitalized(person)),
-                //     );
-                // }
-            }
-        }
-    }
-
     pub fn handle_cmd(
         &mut self,
         now: Time,
@@ -371,67 +330,6 @@ impl PandemicModel {
             }
             // This is handled by the rest of the simulation
             Cmd::CancelFutureTrips(_) => unreachable!(),
-            Cmd::Poll => {
-                let infectious_ped = walkers
-                    .get_unzoomed_agents(now, map)
-                    .into_iter()
-                    .filter_map(|x| {
-                        // normally it is a person (already filtered by walkers)
-                        if self.is_infectious(x.person.unwrap()) {
-                            Some(x.pos)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<Pt2D>>();
-
-                let sane_ped = walkers
-                    .get_unzoomed_agents(now, map)
-                    .into_iter()
-                    .filter_map(|x| {
-                        // normally it is a person (already filtered by walkers)
-                        if self.is_sane(x.person.unwrap()) {
-                            Some((x.person.unwrap(), x.pos))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<(PersonID, Pt2D)>>();
-
-                if infectious_ped.len() > 0 {
-                    self.concentration.add_sources(
-                        &infectious_ped,
-                        map.get_bounds(),
-                        self.spacing.inner_meters(),
-                        self.delta_t.inner_seconds(),
-                        1.0,
-                    );
-                }
-
-                self.concentration.diffuse(
-                    0.002,
-                    0.002,
-                    self.spacing.inner_meters(),
-                    self.delta_t.inner_seconds(),
-                );
-                self.concentration.absorb(0.01);
-                // if now.inner_seconds() as usize % 3600 == 0 {
-                //     // println!("{:?}", self.concentration);
-                //     self.concentration
-                //         .draw_autoscale(&format!("test_{}.png", now.inner_seconds() as usize));
-                // }
-
-                if sane_ped.len() > 0 {
-                    self.pedestrian_transmission(
-                        now,
-                        &sane_ped,
-                        map.get_bounds(),
-                        self.spacing.inner_meters(),
-                        scheduler,
-                    );
-                }
-                scheduler.push(now + self.delta_t, Command::Pandemic(Cmd::Poll));
-            }
             Cmd::Transition(person) => {
                 self.transition(now, person, scheduler);
             }
