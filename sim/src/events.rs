@@ -1,4 +1,4 @@
-use crate::{CarID, OffMapLocation, ParkingSpot, PedestrianID, PersonID, TripID, TripMode};
+use crate::{CarID, OffMapLocation, ParkingSpot, PedestrianID, PersonID, Position, TripID, TripMode};
 use geom::Duration;
 use map_model::{
     BuildingID, BusRouteID, BusStopID, IntersectionID, LaneID, Map, Path, PathRequest, Traversable,
@@ -27,8 +27,8 @@ pub enum Event {
 
     BikeStoppedAtSidewalk(CarID, LaneID),
 
-    AgentEntersTraversable(Option<PersonID>, TripMode, Traversable),
-    AgentLeavesTraversable(Option<PersonID>, TripMode, Traversable), // TODO is TripMode needed? Only for consistency maybe
+    AgentEntersTraversable(Option<PersonID>, TripMode, Traversable, Position),
+    AgentLeavesTraversable(Option<PersonID>, TripMode, Traversable, Position), // TODO is TripMode needed? Only for consistency maybe
     IntersectionDelayMeasured(IntersectionID, Duration),
 
     TripFinished {

@@ -1,7 +1,7 @@
 use crate::{
     AgentID, AgentProperties, Command, CreatePedestrian, DistanceInterval, DrawPedCrowdInput,
     DrawPedestrianInput, Event, IntersectionSimState, ParkingSimState, ParkingSpot,
-    PedCrowdLocation, PedestrianID, PersonID, Scheduler, SidewalkPOI, SidewalkSpot, TimeInterval,
+    PedCrowdLocation, PedestrianID, PersonID, Position, Scheduler, SidewalkPOI, SidewalkSpot, TimeInterval,
     TransitSimState, TripID, TripManager, TripMode, TripPositions, UnzoomedAgent,
 };
 use abstutil::{deserialize_multimap, serialize_multimap, MultiMap};
@@ -87,6 +87,7 @@ impl WalkingSimState {
                     Some(params.person),
                     TripMode::from_agent(AgentID::Pedestrian(params.id)),
                     Traversable::Lane(params.start.sidewalk_pos.lane()),
+                    params.start.sidewalk_pos
                 ));
                 ped.crossing_state(params.start.sidewalk_pos.dist_along(), now, map)
             }
@@ -149,6 +150,7 @@ impl WalkingSimState {
                                 Some(ped.person),
                                 TripMode::from_agent(AgentID::Pedestrian(ped.id)),
                                 ped.path.current_step().as_traversable(),
+                                ped.goal.sidewalk_pos,
                             ));
                             self.peds.remove(&id);
                         }
@@ -179,6 +181,7 @@ impl WalkingSimState {
                                     Some(ped.person),
                                     TripMode::from_agent(AgentID::Pedestrian(ped.id)),
                                     ped.path.current_step().as_traversable(),
+                                    ped.goal.sidewalk_pos
                                 ));
                                 self.peds.remove(&id);
                             }
@@ -199,6 +202,7 @@ impl WalkingSimState {
                                 Some(ped.person),
                                 TripMode::from_agent(AgentID::Pedestrian(ped.id)),
                                 ped.path.current_step().as_traversable(),
+                                ped.goal.sidewalk_pos
                             ));
                             self.peds.remove(&id);
                         }
@@ -264,6 +268,7 @@ impl WalkingSimState {
                     Some(ped.person),
                     TripMode::from_agent(AgentID::Pedestrian(ped.id)),
                     Traversable::Lane(map.get_b(b).front_path.sidewalk.lane()),
+                    ped.goal.sidewalk_pos
                 ));
             }
             PedState::EnteringBuilding(bldg, _) => {
@@ -282,6 +287,7 @@ impl WalkingSimState {
                     Some(ped.person),
                     TripMode::from_agent(AgentID::Pedestrian(ped.id)),
                     ped.path.current_step().as_traversable(),
+                    ped.goal.sidewalk_pos
                 ));
                 self.peds.remove(&id);
             }
@@ -301,6 +307,7 @@ impl WalkingSimState {
                     Some(ped.person),
                     TripMode::from_agent(AgentID::Pedestrian(ped.id)),
                     ped.path.current_step().as_traversable(),
+                    spot.sidewalk_pos,
                 ));
                 self.peds.remove(&id);
             }
@@ -309,6 +316,7 @@ impl WalkingSimState {
                     Some(ped.person),
                     TripMode::from_agent(AgentID::Pedestrian(ped.id)),
                     Traversable::Lane(spot.sidewalk_pos.lane()),
+                    spot.sidewalk_pos,
                 ));
                 ped.state = ped.crossing_state(spot.sidewalk_pos.dist_along(), now, map);
                 scheduler.push(ped.state.get_end_time(), Command::UpdatePed(ped.id));
@@ -664,11 +672,22 @@ impl Pedestrian {
         }
 
         peds_per_traversable.remove(self.path.current_step().as_traversable(), self.id);
-        events.push(Event::AgentLeavesTraversable(
-            Some(self.person),
-            TripMode::from_agent(AgentID::Pedestrian(self.id)),
-            self.path.current_step().as_traversable(),
-        ));
+        let end_dist = match self.path.current_step() {
+            PathStep::Lane(l) => map.get_l(l).length(),
+            PathStep::ContraflowLane(l) => Distance::ZERO,
+            PathStep::Turn(_) => Distance::ZERO,
+        };
+        if let Some(id) = self.path.current_step().as_traversable().maybe_lane() {
+            events.push(Event::AgentLeavesTraversable(
+                Some(self.person),
+                TripMode::from_agent(AgentID::Pedestrian(self.id)),
+                self.path.current_step().as_traversable(),
+                Position::new(id, end_dist),
+            ));
+        }
+
+        
+        
         self.path.shift(map);
         let start_dist = match self.path.current_step() {
             PathStep::Lane(_) => Distance::ZERO,
@@ -677,11 +696,16 @@ impl Pedestrian {
         };
         self.state = self.crossing_state(start_dist, now, map);
         peds_per_traversable.insert(self.path.current_step().as_traversable(), self.id);
-        events.push(Event::AgentEntersTraversable(
-            Some(self.person),
-            TripMode::from_agent(AgentID::Pedestrian(self.id)),
-            self.path.current_step().as_traversable(),
-        ));
+        // Not interested in TurnID
+        if let Some(id) = self.path.current_step().as_traversable().maybe_lane() {
+            events.push(Event::AgentEntersTraversable(
+                Some(self.person),
+                TripMode::from_agent(AgentID::Pedestrian(self.id)),
+                self.path.current_step().as_traversable(),
+                Position::new(id, start_dist),
+            ));
+        }
+        
         true
     }
 }

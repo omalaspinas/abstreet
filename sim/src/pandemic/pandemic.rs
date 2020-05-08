@@ -198,15 +198,15 @@ impl PandemicModel {
         assert!(self.initialized);
 
         match ev {
-            Event::AgentEntersTraversable(person, _, t) => {
+            Event::AgentEntersTraversable(person, _, t, pos) => {
                 if let Some(p) = person {
                     match *t {
-                        Traversable::Lane(lid) => self.sidewalks.person_enters_space(now, *p, lid),
+                        Traversable::Lane(lid) => self.sidewalks.person_enters_space(now, *p, lid, ),
                         _ => (),
                     }
                 }
             }
-            Event::AgentLeavesTraversable(person, tm, t) => {
+            Event::AgentLeavesTraversable(person, tm, t, pos) => {
                 // TODO at the moment we model sidewalks as buildings.
                 // We could make that better by simulating people crossing
                 // each other
