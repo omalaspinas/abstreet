@@ -38,7 +38,7 @@ use map_model::{
     BuildingID, BusStopID, DirectedRoadID, IntersectionID, LaneID, Map, Path, PathConstraints,
     PathRequest, Position,
 };
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -120,6 +120,9 @@ impl fmt::Display for PersonID {
         write!(f, "Person {}", self.0)
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct OrigPersonID(pub usize, pub usize);
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub enum VehicleType {

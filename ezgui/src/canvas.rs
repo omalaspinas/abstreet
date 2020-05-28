@@ -2,7 +2,7 @@ use crate::assets::Assets;
 use crate::{ScreenDims, ScreenPt, ScreenRectangle, UserInput};
 use abstutil::Timer;
 use geom::{Bounds, Pt2D};
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 
 // Click and release counts as a normal click, not a drag, if the distance between click and
@@ -10,6 +10,8 @@ use std::cell::RefCell;
 const DRAG_THRESHOLD: f64 = 5.0;
 
 const PAN_SPEED: f64 = 15.0;
+
+const PANNING_THRESHOLD: f64 = 25.0;
 
 pub struct Canvas {
     // All of these f64's are in screen-space, so do NOT use Pt2D.
@@ -34,6 +36,7 @@ pub struct Canvas {
     pub map_dims: (f64, f64),
     pub invert_scroll: bool,
     pub touchpad_to_move: bool,
+    pub edge_auto_panning: bool,
 
     // TODO Bit weird and hacky to mutate inside of draw() calls.
     pub(crate) covered_areas: RefCell<Vec<ScreenRectangle>>,
@@ -63,6 +66,7 @@ impl Canvas {
             map_dims: (0.0, 0.0),
             invert_scroll: false,
             touchpad_to_move: false,
+            edge_auto_panning: false,
 
             covered_areas: RefCell::new(Vec::new()),
 
@@ -141,6 +145,26 @@ impl Canvas {
             }
         } else if self.drag_just_ended {
             self.drag_just_ended = false;
+        } else {
+            let cursor_screen_pt = self.get_cursor().to_pt();
+            let cursor_map_pt = self.screen_to_map(self.get_cursor());
+            let inner_bounds = self.get_inner_bounds();
+            let map_bounds = self.get_map_bounds();
+            if !inner_bounds.contains(cursor_screen_pt)
+                && self.edge_auto_panning
+                && map_bounds.contains(cursor_map_pt)
+            {
+                let center_pt = self.center_to_screen_pt().to_pt();
+                let displacement_x = cursor_screen_pt.x() - center_pt.x();
+                let displacement_y = cursor_screen_pt.y() - center_pt.y();
+                let displacement_magnitude =
+                    f64::sqrt(displacement_x.powf(2.0) + displacement_y.powf(2.0));
+                let displacement_unit_x = displacement_x / displacement_magnitude;
+                let displacement_unit_y = displacement_y / displacement_magnitude;
+                //Add displacement along each axis
+                self.cam_x += displacement_unit_x * PAN_SPEED;
+                self.cam_y += displacement_unit_y * PAN_SPEED;
+            }
         }
     }
 
@@ -207,6 +231,27 @@ impl Canvas {
             (pt.x() * self.cam_zoom) - self.cam_x,
             (pt.y() * self.cam_zoom) - self.cam_y,
         )
+    }
+
+    //the inner bound tells us whether auto-panning should or should not take place
+    fn get_inner_bounds(&self) -> Bounds {
+        let mut b = Bounds::new();
+        b.update(ScreenPt::new(PANNING_THRESHOLD, PANNING_THRESHOLD).to_pt());
+        b.update(
+            ScreenPt::new(
+                self.window_width - PANNING_THRESHOLD,
+                self.window_height - PANNING_THRESHOLD,
+            )
+            .to_pt(),
+        );
+        b
+    }
+
+    fn get_map_bounds(&self) -> Bounds {
+        let mut b = Bounds::new();
+        b.update(Pt2D::new(0.0, 0.0));
+        b.update(Pt2D::new(self.map_dims.0, self.map_dims.1));
+        b
     }
 
     pub fn get_screen_bounds(&self) -> Bounds {

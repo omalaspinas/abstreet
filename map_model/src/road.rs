@@ -2,7 +2,7 @@ use crate::raw::{OriginalRoad, RestrictionType};
 use crate::{osm, BusStopID, IntersectionID, LaneID, LaneType, Map, PathConstraints};
 use abstutil::{Error, Warn};
 use geom::{Distance, PolyLine, Polygon, Speed};
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
@@ -94,7 +94,11 @@ pub struct Road {
     pub osm_tags: BTreeMap<String, String>,
     // self is 'from'
     pub turn_restrictions: Vec<(RestrictionType, RoadID)>,
+    // self is 'from'. (via, to). Only BanTurns.
+    pub complicated_turn_restrictions: Vec<(RoadID, RoadID)>,
     pub orig_id: OriginalRoad,
+    pub speed_limit: Speed,
+    pub zorder: isize,
 
     // Invariant: A road must contain at least one child
     // These are ordered from closest to center lane (left-most when driving on the right) to
@@ -203,8 +207,7 @@ impl Road {
         }
     }
 
-    pub fn get_speed_limit(&self) -> Speed {
-        // TODO Should probably cache this
+    pub(crate) fn speed_limit_from_osm(&self) -> Speed {
         if let Some(limit) = self.osm_tags.get(osm::MAXSPEED) {
             // TODO handle other units
             if limit.ends_with(" mph") {
@@ -220,15 +223,6 @@ impl Road {
             return Speed::miles_per_hour(40.0);
         }
         Speed::miles_per_hour(20.0)
-    }
-
-    pub fn get_zorder(&self) -> isize {
-        // TODO Should probably cache this
-        if let Some(layer) = self.osm_tags.get("layer") {
-            layer.parse::<isize>().unwrap()
-        } else {
-            0
-        }
     }
 
     pub fn incoming_lanes(&self, i: IntersectionID) -> &Vec<(LaneID, LaneType)> {
@@ -398,6 +392,8 @@ impl Road {
             match highway.as_ref() {
                 "motorway" => 20,
                 "motorway_link" => 19,
+                // TODO Probably not true in general. For the West Seattle bridge.
+                "construction" => 18,
 
                 "trunk" => 17,
                 "trunk_link" => 16,

@@ -9,15 +9,20 @@ jobs:
       - uses: hecrj/setup-rust-action@v1
         with:
           rust-version: 1.43.0
-      - name: Run build
+      - name: Build game
         run: cargo build --release --bin game
-      - name: Package release
-        run: ./release/build.sh abst_windows play_abstreet.bat target/release/game.exe
-      - name: Upload binary
-        uses: actions/upload-artifact@v1
+      - name: Build importer
+        run: cargo build --release --bin importer
+      - name: Upload game
+        uses: actions/upload-artifact@v2
         with:
-          name: game_exe
+          name: windows_exe
           path: target/release/game.exe
+      - name: Upload importer
+        uses: actions/upload-artifact@v2
+        with:
+          name: windows_exe
+          path: target/release/importer.exe
   build-macos:
     runs-on: macos-latest
     if: "contains(github.event.head_commit.message, '[rebuild]')"
@@ -26,12 +31,14 @@ jobs:
       - uses: hecrj/setup-rust-action@v1
         with:
           rust-version: 1.43.0
-      - name: Run build
+      - name: Build game
         run: cargo build --release --bin game
+      - name: Build importer
+        run: cargo build --release --bin importer
       - name: Package release
-        run: ./release/build.sh abst_mac play_abstreet.sh target/release/game
+        run: ./release/build.sh abst_mac play_abstreet.sh target/release/game target/release/importer
       - name: Upload release
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v2
         with:
           name: abst_mac
           path: abst_mac.zip
@@ -43,12 +50,14 @@ jobs:
       - uses: hecrj/setup-rust-action@v1
         with:
           rust-version: 1.43.0
-      - name: Run build
+      - name: Build game
         run: cargo build --release --bin game
+      - name: Build importer
+        run: cargo build --release --bin importer
       - name: Package release
-        run: ./release/build.sh abst_linux play_abstreet.sh target/release/game
+        run: ./release/build.sh abst_linux play_abstreet.sh target/release/game target/release/importer
       - name: Upload release
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v2
         with:
           name: abst_linux
           path: abst_linux.zip

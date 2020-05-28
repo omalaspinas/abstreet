@@ -2,14 +2,17 @@ use crate::{
     Angle, Bounds, Distance, HashablePt2D, InfiniteLine, Line, Polygon, Pt2D, Ring, EPSILON_DIST,
 };
 use abstutil::Warn;
-use geo::algorithm::simplify::Simplify;
-use ordered_float::NotNan;
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 
 // TODO How to tune this?
 const MITER_THRESHOLD: f64 = 500.0;
+
+pub enum ArrowCap {
+    Triangle,
+    Lines,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PolyLine {
@@ -451,7 +454,7 @@ impl PolyLine {
         Polygon::precomputed(points, indices)
     }
 
-    pub fn dashed_polygons(
+    pub fn exact_dashed_polygons(
         &self,
         width: Distance,
         dash_len: Distance,
@@ -477,7 +480,21 @@ impl PolyLine {
         polygons
     }
 
-    pub fn make_arrow(&self, thickness: Distance) -> Warn<Polygon> {
+    // Don't draw the dashes too close to the ends.
+    pub fn dashed_lines(
+        &self,
+        width: Distance,
+        dash_len: Distance,
+        dash_separation: Distance,
+    ) -> Vec<Polygon> {
+        if self.length() < dash_separation * 2.0 + EPSILON_DIST {
+            return vec![self.make_polygons(width)];
+        }
+        self.exact_slice(dash_separation, self.length() - dash_separation)
+            .exact_dashed_polygons(width, dash_len, dash_separation)
+    }
+
+    pub fn make_arrow(&self, thickness: Distance, cap: ArrowCap) -> Warn<Polygon> {
         let head_size = thickness * 2.0;
         let triangle_height = head_size / 2.0_f64.sqrt();
 
@@ -488,15 +505,26 @@ impl PolyLine {
             );
         }
         let slice = self.exact_slice(Distance::ZERO, self.length() - triangle_height);
-
         let angle = slice.last_pt().angle_to(self.last_pt());
-        Warn::ok(slice.make_polygons(thickness).union(Polygon::new(&vec![
-                self.last_pt(),
-                self.last_pt()
-                    .project_away(head_size, angle.rotate_degs(-135.0)),
-                self.last_pt()
-                    .project_away(head_size, angle.rotate_degs(135.0)),
-            ])))
+        let corner1 = self
+            .last_pt()
+            .project_away(head_size, angle.rotate_degs(-135.0));
+        let corner2 = self
+            .last_pt()
+            .project_away(head_size, angle.rotate_degs(135.0));
+
+        match cap {
+            ArrowCap::Triangle => {
+                Warn::ok(slice.make_polygons(thickness).union(Polygon::new(&vec![
+                    self.last_pt(),
+                    corner1,
+                    corner2,
+                ])))
+            }
+            ArrowCap::Lines => Warn::ok(self.make_polygons(thickness).union(
+                PolyLine::new(vec![corner1, self.last_pt(), corner2]).make_polygons(thickness),
+            )),
+        }
     }
 
     // TODO Refactor
@@ -542,6 +570,27 @@ impl PolyLine {
                 ),
             )
         }
+    }
+
+    pub fn dashed_arrow(
+        &self,
+        width: Distance,
+        dash_len: Distance,
+        dash_separation: Distance,
+        cap: ArrowCap,
+    ) -> Vec<Polygon> {
+        let mut polygons = self.exact_dashed_polygons(width, dash_len, dash_separation);
+        // And a cap on the arrow. In case the last line is long, trim it to be the dash
+        // length.
+        let last_line = self.last_line();
+        let last_len = last_line.length();
+        let arrow_line = if last_len <= dash_len {
+            last_line
+        } else {
+            Line::new(last_line.dist_along(last_len - dash_len), last_line.pt2())
+        };
+        polygons.push(arrow_line.to_polyline().make_arrow(width, cap).unwrap());
+        polygons
     }
 
     // Also return the angle of the line where the hit was found
@@ -666,23 +715,6 @@ impl PolyLine {
         }
         crossings == 2
     }
-
-    pub fn new_simplified(pts: Vec<Pt2D>, epsilon: f64) -> PolyLine {
-        // Why does this invert Y?
-        let max_y = pts
-            .iter()
-            .max_by_key(|pt| NotNan::new(pt.y()).unwrap())
-            .unwrap()
-            .y();
-        // Could use SimplifyVW, but I haven't noticed much of a difference yet
-        PolyLine::new(
-            pts_to_line_string(pts)
-                .simplify(&epsilon)
-                .into_iter()
-                .map(|coord| Pt2D::new(coord.x, max_y - coord.y))
-                .collect(),
-        )
-    }
 }
 
 impl fmt::Display for PolyLine {
@@ -761,13 +793,4 @@ fn to_set(pts: &[Pt2D]) -> (HashSet<HashablePt2D>, HashSet<HashablePt2D>) {
         }
     }
     (deduped, dupes)
-}
-
-// TODO Share
-fn pts_to_line_string(raw_pts: Vec<Pt2D>) -> geo::LineString<f64> {
-    let pts: Vec<geo::Point<f64>> = raw_pts
-        .into_iter()
-        .map(|pt| geo::Point::new(pt.x(), pt.y()))
-        .collect();
-    pts.into()
 }

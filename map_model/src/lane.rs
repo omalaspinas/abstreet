@@ -4,7 +4,7 @@ use crate::{
     TurnType,
 };
 use geom::{Angle, Distance, Line, PolyLine, Pt2D};
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -216,7 +216,7 @@ impl Lane {
         Some(
             part.split(';')
                 .flat_map(|s| match s {
-                    "left" => vec![TurnType::Left],
+                    "left" | "left\\left" => vec![TurnType::Left],
                     "right" => vec![TurnType::Right],
                     // TODO What is blank supposed to mean? From few observed cases, same as through
                     "through" | "" => vec![
@@ -230,7 +230,7 @@ impl Lane {
                         TurnType::LaneChangeRight,
                         TurnType::Right,
                     ],
-                    "slight_left" | "slight left" | "merge_to_left" => {
+                    "slight_left" | "slight left" | "merge_to_left" | "sharp_left" => {
                         vec![TurnType::Straight, TurnType::LaneChangeLeft, TurnType::Left]
                     }
                     "reverse" => {

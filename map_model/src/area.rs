@@ -1,5 +1,5 @@
 use geom::Polygon;
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -18,6 +18,7 @@ pub enum AreaType {
     Park,
     Water,
     PedestrianIsland,
+    Island,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

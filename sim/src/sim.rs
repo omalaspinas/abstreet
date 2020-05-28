@@ -1,6 +1,6 @@
 use crate::{
     AgentID, AlertLocation, Analytics, CarID, Command, CreateCar, DrawCarInput, DrawPedCrowdInput,
-    DrawPedestrianInput, DrivingSimState, Event, GetDrawAgents, IntersectionSimState,
+    DrawPedestrianInput, DrivingSimState, Event, GetDrawAgents, IntersectionSimState, OrigPersonID,
     PandemicModel, ParkedCar, ParkingSimState, ParkingSpot, PedestrianID, Person, PersonID,
     PersonState, Router, Scheduler, SidewalkPOI, SidewalkSpot, TransitSimState, TripEndpoint,
     TripID, TripManager, TripMode, TripPhaseType, TripPositions, TripResult, TripSpawner,
@@ -15,7 +15,7 @@ use map_model::{
     PathRequest, PathStep, Position, RoadID, Traversable,
 };
 use rand_xorshift::XorShiftRng;
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::panic;
 
@@ -193,12 +193,13 @@ impl Sim {
 
         // Anything on the current lane? TODO Should find the closest one to the sidewalk, but
         // need a new method in ParkingSimState to make that easy.
-        let spot = if let Some((spot, _)) = self.parking.get_first_free_spot(
-            Position::new(driving_lane, Distance::ZERO),
-            &vehicle,
-            map,
-        ) {
-            spot
+        // TODO Refactor the logic in router
+        let spot = if let Some((spot, _)) = self
+            .parking
+            .get_all_free_spots(Position::new(driving_lane, Distance::ZERO), &vehicle, map)
+            .get(0)
+        {
+            spot.clone()
         } else {
             let (_, spot, _) =
                 self.parking
@@ -217,8 +218,14 @@ impl Sim {
     }
 
     // TODO Should these two be in TripSpawner?
-    pub fn new_person(&mut self, p: PersonID, ped_speed: Speed, vehicle_specs: Vec<VehicleSpec>) {
-        self.trips.new_person(p, ped_speed, vehicle_specs);
+    pub(crate) fn new_person(
+        &mut self,
+        p: PersonID,
+        orig_id: Option<OrigPersonID>,
+        ped_speed: Speed,
+        vehicle_specs: Vec<VehicleSpec>,
+    ) {
+        self.trips.new_person(p, orig_id, ped_speed, vehicle_specs);
     }
     pub fn random_person(&mut self, ped_speed: Speed, vehicle_specs: Vec<VehicleSpec>) -> &Person {
         self.trips.random_person(ped_speed, vehicle_specs)
@@ -999,6 +1006,14 @@ impl Sim {
     pub fn get_person(&self, id: PersonID) -> &Person {
         self.trips.get_person(id).unwrap()
     }
+    pub fn find_person_by_orig_id(&self, id: OrigPersonID) -> Option<PersonID> {
+        for p in self.get_all_people() {
+            if p.orig_id == Some(id) {
+                return Some(p.id);
+            }
+        }
+        None
+    }
     pub fn get_all_people(&self) -> &Vec<Person> {
         self.trips.get_all_people()
     }
@@ -1025,6 +1040,9 @@ impl Sim {
             AgentID::Car(car) => self.driving.get_path(car),
             AgentID::Pedestrian(ped) => self.walking.get_path(ped),
         }
+    }
+    pub fn get_all_driving_paths(&self) -> Vec<&Path> {
+        self.driving.get_all_driving_paths()
     }
 
     pub fn trace_route(
@@ -1095,6 +1113,9 @@ impl Sim {
 
     pub fn get_accepted_agents(&self, id: IntersectionID) -> HashSet<AgentID> {
         self.intersections.get_accepted_agents(id)
+    }
+    pub fn get_blocked_by(&self, a: AgentID) -> HashSet<AgentID> {
+        self.intersections.get_blocked_by(a)
     }
 
     pub fn location_of_buses(&self, route: BusRouteID, map: &Map) -> Vec<(CarID, Pt2D)> {

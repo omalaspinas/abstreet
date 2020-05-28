@@ -30,12 +30,14 @@ fn main() {
 
     let mut flags = Flags {
         sim_flags: SimFlags::from_args(&mut args),
-        kml: args.optional("--kml"),
         draw_lane_markings: !args.enabled("--dont_draw_lane_markings"),
         num_agents: args.optional_parse("--num_agents", |s| s.parse()),
     };
     let mut opts = options::Options::default();
     opts.dev = args.enabled("--dev");
+    if args.enabled("--lowzoom") {
+        opts.min_zoom_for_detail = 1.0;
+    }
 
     if let Some(x) = args.optional("--color_scheme") {
         let mut ok = false;
@@ -57,6 +59,7 @@ fn main() {
         }
     }
     let mut settings = ezgui::Settings::new("A/B Street", "../data/system/fonts");
+    settings.window_icon("../data/system/assets/pregame/icon.png");
     if args.enabled("--enable_profiler") {
         settings.enable_profiling();
     }
@@ -73,7 +76,7 @@ fn main() {
     let mut mode = None;
     if let Some(x) = args.optional("--challenge") {
         let mut aliases = Vec::new();
-        'OUTER: for (_, stages) in challenges::Challenge::all(true) {
+        'OUTER: for (_, stages) in challenges::Challenge::all() {
             for challenge in stages {
                 if challenge.alias == x {
                     flags.sim_flags.load = challenge.gameplay.map_path();

@@ -75,11 +75,6 @@ impl Wizard {
     ) -> Option<R> {
         assert!(self.alive);
 
-        // Otherwise, we try to use one event for two inputs potentially
-        if ctx.input.has_been_consumed() {
-            return None;
-        }
-
         if self.tb_comp.is_none() {
             self.tb_comp = Some(
                 Composite::new(
@@ -91,6 +86,7 @@ impl Wizard {
                                 .margin(5)
                                 .align_right(),
                         ]),
+                        Text::new().draw(ctx).named("error"),
                         Widget::text_entry(ctx, prefilled.unwrap_or_else(String::new), true)
                             .named("input"),
                         Btn::text_bg2("Done").build(ctx, "done", hotkey(Key::Enter)),
@@ -118,11 +114,19 @@ impl Wizard {
                     return None;
                 }
                 "done" => {
-                    let line = self.tb_comp.take().unwrap().text_box("input");
+                    let line = self.tb_comp.as_ref().unwrap().text_box("input");
                     if let Some(result) = parser(line.clone()) {
+                        self.tb_comp = None;
                         Some(result)
                     } else {
-                        println!("Invalid input {}", line);
+                        self.tb_comp.as_mut().unwrap().replace(
+                            ctx,
+                            "error",
+                            Line(format!("Invalid input: {}", line))
+                                .fg(Color::RED)
+                                .draw(ctx)
+                                .named("error"),
+                        );
                         None
                     }
                 }
@@ -137,7 +141,7 @@ impl Wizard {
 // prior results.
 pub struct WrappedWizard<'a, 'b> {
     wizard: &'a mut Wizard,
-    ctx: &'a mut EventCtx<'b>,
+    pub ctx: &'a mut EventCtx<'b>,
 
     // The downcasts are safe iff the queries made to the wizard are deterministic.
     ready_results: VecDeque<Box<dyn Cloneable>>,

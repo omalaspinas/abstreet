@@ -1,4 +1,5 @@
 mod misc;
+mod parking_overhead;
 mod summaries;
 mod trip_table;
 
@@ -12,19 +13,24 @@ pub use trip_table::TripTable;
 pub enum DashTab {
     TripTable,
     TripSummaries,
+    ParkingOverhead,
     ActiveTraffic,
     BusRoutes,
 }
 
 impl DashTab {
-    pub fn picker(self, ctx: &EventCtx) -> Widget {
+    pub fn picker(self, ctx: &EventCtx, app: &App) -> Widget {
         let mut row = Vec::new();
         for (name, tab) in vec![
             ("trip table", DashTab::TripTable),
             ("trip summaries", DashTab::TripSummaries),
+            ("parking overhead", DashTab::ParkingOverhead),
             ("active traffic", DashTab::ActiveTraffic),
             ("bus routes", DashTab::BusRoutes),
         ] {
+            if tab == DashTab::TripSummaries && app.has_prebaked().is_none() {
+                continue;
+            }
             if self == tab {
                 row.push(Btn::text_bg2(name).inactive(ctx));
             } else {
@@ -50,6 +56,9 @@ impl DashTab {
                 app,
                 summaries::Filter::new(),
             )),
+            "parking overhead" => {
+                Transition::Replace(parking_overhead::ParkingOverhead::new(ctx, app))
+            }
             "active traffic" => Transition::Replace(misc::ActiveTraffic::new(ctx, app)),
             "bus routes" => Transition::Replace(misc::BusRoutes::new(ctx, app)),
             _ => unreachable!(),

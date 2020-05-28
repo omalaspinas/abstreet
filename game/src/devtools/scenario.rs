@@ -1,15 +1,16 @@
 use crate::app::App;
 use crate::common::{tool_panel, Colorer, CommonState, ContextualActions, Warping};
 use crate::devtools::blocks::BlockMap;
+use crate::devtools::destinations::PopularDestinations;
 use crate::game::{State, Transition, WizardState};
 use crate::helpers::ID;
 use crate::managed::{WrappedComposite, WrappedOutcome};
 use abstutil::{prettyprint_usize, Counter, MultiMap};
 use ezgui::{
-    hotkey, lctrl, Btn, Choice, Color, Composite, Drawable, EventCtx, GeomBatch, GfxCtx,
-    HorizontalAlignment, Key, Line, Outcome, Slider, VerticalAlignment, Widget,
+    hotkey, lctrl, Choice, Color, Composite, Drawable, EventCtx, GeomBatch, GfxCtx, Key, Line,
+    Outcome, Text,
 };
-use geom::{Distance, Line, PolyLine, Polygon};
+use geom::{ArrowCap, Distance, PolyLine};
 use map_model::{BuildingID, IntersectionID, Map};
 use sim::{
     DrivingGoal, IndividTrip, PersonSpec, Scenario, SidewalkPOI, SidewalkSpot, SpawnTrip,
@@ -104,7 +105,7 @@ impl ScenarioManager {
                 ],
                 vec![
                     (hotkey(Key::B), "block map"),
-                    (hotkey(Key::D), "dot map"),
+                    (hotkey(Key::D), "popular destinations"),
                     (lctrl(Key::P), "stop showing paths"),
                 ],
             ),
@@ -128,15 +129,11 @@ impl State for ScenarioManager {
                 "X" => {
                     return Transition::Pop;
                 }
-                "dot map" => {
-                    return Transition::Push(Box::new(DotMap::new(ctx, app, &self.scenario)));
-                }
                 "block map" => {
-                    return Transition::Push(Box::new(BlockMap::new(
-                        ctx,
-                        app,
-                        self.scenario.clone(),
-                    )));
+                    return Transition::Push(BlockMap::new(ctx, app, self.scenario.clone()));
+                }
+                "popular destinations" => {
+                    return Transition::Push(PopularDestinations::new(ctx, app, &self.scenario));
                 }
                 // TODO Inactivate this sometimes
                 "stop showing paths" => {
@@ -178,9 +175,24 @@ impl State for ScenarioManager {
 
     fn draw(&self, g: &mut GfxCtx, app: &App) {
         // TODO Let common contribute draw_options...
-        self.bldg_colors.draw(g);
+        self.bldg_colors.draw(g, app);
         if let Some(ref p) = self.demand {
             g.redraw(p);
+        }
+
+        if let Some(ID::Intersection(i)) = app.primary.current_selection {
+            if app.primary.map.get_i(i).is_border() {
+                let mut txt = Text::new();
+                txt.add(Line(format!(
+                    "{} trips start here",
+                    prettyprint_usize(self.trips_from_border.get(i).len())
+                )));
+                txt.add(Line(format!(
+                    "{} trips end here",
+                    prettyprint_usize(self.trips_to_border.get(i).len())
+                )));
+                g.draw_mouse_tooltip(txt);
+            }
         }
 
         self.composite.draw(g);
@@ -432,7 +444,7 @@ fn show_demand(
             batch.push(
                 Color::RED.alpha(0.8),
                 PolyLine::new(vec![home_pt, id.canonical_point(&app.primary).unwrap()])
-                    .make_arrow(width)
+                    .make_arrow(width, ArrowCap::Triangle)
                     .unwrap(),
             );
         }
@@ -442,115 +454,12 @@ fn show_demand(
         batch.push(
             Color::BLUE.alpha(0.8),
             PolyLine::new(vec![id.canonical_point(&app.primary).unwrap(), home_pt])
-                .make_arrow(width)
+                .make_arrow(width, ArrowCap::Triangle)
                 .unwrap(),
         );
     }
 
     batch.upload(ctx)
-}
-
-struct DotMap {
-    composite: Composite,
-
-    lines: Vec<Line>,
-    draw: Option<(f64, Drawable)>,
-}
-
-impl DotMap {
-    fn new(ctx: &mut EventCtx, app: &App, scenario: &Scenario) -> DotMap {
-        let map = &app.primary.map;
-        let lines = scenario
-            .people
-            .iter()
-            .flat_map(|p| {
-                p.trips.iter().filter_map(|trip| {
-                    let (start, end) = match &trip.trip {
-                        SpawnTrip::VehicleAppearing { start, goal, .. } => {
-                            (start.pt(map), goal.pt(map))
-                        }
-                        SpawnTrip::FromBorder { dr, goal, .. } => {
-                            (map.get_i(dr.src_i(map)).polygon.center(), goal.pt(map))
-                        }
-                        SpawnTrip::UsingParkedCar(b, goal) => {
-                            (map.get_b(*b).polygon.center(), goal.pt(map))
-                        }
-                        SpawnTrip::UsingBike(start, goal) => {
-                            (start.sidewalk_pos.pt(map), goal.pt(map))
-                        }
-                        SpawnTrip::JustWalking(start, goal) => {
-                            (start.sidewalk_pos.pt(map), goal.sidewalk_pos.pt(map))
-                        }
-                        SpawnTrip::UsingTransit(start, goal, _, _, _) => {
-                            (start.sidewalk_pos.pt(map), goal.sidewalk_pos.pt(map))
-                        }
-                        SpawnTrip::Remote { .. } => unimplemented!(),
-                    };
-                    Line::maybe_new(start, end)
-                })
-            })
-            .collect();
-        DotMap {
-            composite: Composite::new(
-                Widget::col(vec![
-                    Widget::row(vec![
-                        Line("Dot map of all trips").small_heading().draw(ctx),
-                        Btn::text_fg("X")
-                            .build_def(ctx, hotkey(Key::Escape))
-                            .align_right(),
-                    ]),
-                    Slider::horizontal(ctx, 150.0, 25.0, 0.0).named("time slider"),
-                ])
-                .padding(10)
-                .bg(app.cs.panel_bg),
-            )
-            .aligned(HorizontalAlignment::Center, VerticalAlignment::Top)
-            .build(ctx),
-
-            lines,
-            draw: None,
-        }
-    }
-}
-
-impl State for DotMap {
-    fn event(&mut self, ctx: &mut EventCtx, _: &mut App) -> Transition {
-        ctx.canvas_movement();
-
-        match self.composite.event(ctx) {
-            Some(Outcome::Clicked(x)) => match x.as_ref() {
-                "X" => {
-                    return Transition::Pop;
-                }
-                _ => unreachable!(),
-            },
-            None => {}
-        }
-
-        let pct = self.composite.slider("time slider").get_percent();
-
-        if self.draw.as_ref().map(|(p, _)| pct != *p).unwrap_or(true) {
-            let mut batch = GeomBatch::new();
-            let radius = Distance::meters(5.0);
-            for l in &self.lines {
-                // Circles are too expensive. :P
-                batch.push(
-                    Color::RED,
-                    Polygon::rectangle_centered(l.percent_along(pct), radius, radius),
-                );
-            }
-            self.draw = Some((pct, batch.upload(ctx)));
-        }
-
-        Transition::Keep
-    }
-
-    fn draw(&self, g: &mut GfxCtx, _: &App) {
-        if let Some((_, ref d)) = self.draw {
-            g.redraw(d);
-        }
-        self.composite.draw(g);
-    }
 }
 
 struct Actions<'a> {

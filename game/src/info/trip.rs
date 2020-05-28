@@ -1,21 +1,48 @@
 use crate::app::App;
-use crate::helpers::ID;
+use crate::helpers::{color_for_trip_phase, ID};
 use crate::info::{make_table, Details, Tab};
-use crate::render::dashed_lines;
 use ezgui::{
     Btn, Color, EventCtx, GeomBatch, Line, LinePlot, PlotOptions, RewriteColor, Series, Text,
     TextExt, Widget,
 };
-use geom::{Angle, Distance, Duration, PolyLine, Polygon, Pt2D, Time};
+use geom::{Angle, ArrowCap, Distance, Duration, PolyLine, Polygon, Pt2D, Time};
 use map_model::{Map, Path, PathStep};
+use maplit::btreemap;
 use sim::{AgentID, PersonID, TripEndpoint, TripID, TripPhase, TripPhaseType, VehicleType};
 use std::collections::BTreeMap;
+
+#[derive(Clone)]
+pub struct OpenTrip {
+    pub show_after: bool,
+    // (unzoomed, zoomed)
+    cached_routes: Vec<Option<(Polygon, Vec<Polygon>)>>,
+}
+// Ignore cached_routes
+impl std::cmp::PartialEq for OpenTrip {
+    fn eq(&self, other: &OpenTrip) -> bool {
+        self.show_after == other.show_after
+    }
+}
+
+impl OpenTrip {
+    pub fn single(id: TripID) -> BTreeMap<TripID, OpenTrip> {
+        btreemap! { id => OpenTrip::new() }
+    }
+
+    pub fn new() -> OpenTrip {
+        OpenTrip {
+            show_after: true,
+            cached_routes: Vec::new(),
+        }
+    }
+}
 
 pub fn ongoing(
     ctx: &mut EventCtx,
     app: &App,
     trip: TripID,
     agent: AgentID,
+    open_trip: &mut OpenTrip,
     details: &mut Details,
 ) -> Widget {
     let phases = app
@@ -98,6 +125,7 @@ pub fn ongoing(
         ctx,
         app,
         trip,
+        open_trip,
         details,
         phases,
         Some(props.dist_crossed / props.total_dist),
@@ -106,7 +134,13 @@ pub fn ongoing(
     Widget::col(col)
 }
 
-pub fn future(ctx: &mut EventCtx, app: &App, trip: TripID, details: &mut Details) -> Widget {
+pub fn future(
+    ctx: &mut EventCtx,
+    app: &App,
+    trip: TripID,
+    open_trip: &mut OpenTrip,
+    details: &mut Details,
+) -> Widget {
     let (start_time, trip_start, trip_end, _) = app.primary.sim.trip_info(trip);
 
     let mut col = Vec::new();
@@ -129,7 +163,9 @@ pub fn future(ctx: &mut EventCtx, app: &App, trip: TripID, details: &mut Details
         ));
 
         let phases = app.prebaked().get_trip_phases(trip, &app.primary.map);
-        col.push(make_timeline(ctx, app, trip, details, phases, None));
+        col.push(make_timeline(
+            ctx, app, trip, open_trip, details, phases, None,
+        ));
     } else {
         // TODO Warp buttons. make_table is showing its age.
         let (_, _, name1) = endpoint(&trip_start, &app.primary.map);
@@ -164,13 +200,12 @@ pub fn finished(
     ctx: &mut EventCtx,
     app: &App,
     person: PersonID,
-    open_trips: &BTreeMap<TripID, bool>,
+    open_trips: &mut BTreeMap<TripID, OpenTrip>,
     trip: TripID,
-    show_after: bool,
     details: &mut Details,
 ) -> Widget {
     let (start_time, _, _, _) = app.primary.sim.trip_info(trip);
-    let phases = if show_after {
+    let phases = if open_trips[&trip].show_after {
         app.primary
             .sim
             .get_analytics()
@@ -181,9 +216,15 @@ pub fn finished(
 
     let mut col = Vec::new();
 
-    if show_after && app.has_prebaked().is_some() {
+    if open_trips[&trip].show_after && app.has_prebaked().is_some() {
         let mut open = open_trips.clone();
-        open.insert(trip, false);
+        open.insert(
+            trip,
+            OpenTrip {
+                show_after: false,
+                cached_routes: Vec::new(),
+            },
+        );
         details.hyperlinks.insert(
             format!("show before changes for {}", trip),
             Tab::PersonTrips(person, open),
@@ -199,7 +240,7 @@ pub fn finished(
         );
     } else if app.has_prebaked().is_some() {
         let mut open = open_trips.clone();
-        open.insert(trip, true);
+        open.insert(trip, OpenTrip::new());
         details.hyperlinks.insert(
             format!("show after changes for {}", trip),
             Tab::PersonTrips(person, open),
@@ -233,7 +274,15 @@ pub fn finished(
         ]));
     }
 
-    col.push(make_timeline(ctx, app, trip, details, phases, None));
+    col.push(make_timeline(
+        ctx,
+        app,
+        trip,
+        open_trips.get_mut(&trip).unwrap(),
+        details,
+        phases,
+        None,
+    ));
 
     Widget::col(col)
 }
@@ -266,6 +315,7 @@ fn make_timeline(
     ctx: &mut EventCtx,
     app: &App,
     trip: TripID,
+    open_trip: &mut OpenTrip,
     details: &mut Details,
     phases: Vec<TripPhase>,
     progress_along_path: Option<f64>,
@@ -287,7 +337,7 @@ fn make_timeline(
                     Pt2D::forcibly_from_gps(loc.gps, map.get_gps_bounds()),
                     center,
                 ])
-                .make_arrow(Distance::meters(5.0))
+                .make_arrow(Distance::meters(5.0), ArrowCap::Triangle)
                 .unwrap();
                 details.unzoomed.push(Color::GREEN, arrow.clone());
                 details.zoomed.push(Color::GREEN, arrow.clone());
@@ -301,6 +351,7 @@ fn make_timeline(
             1.0,
             Angle::ZERO,
             RewriteColor::NoOp,
+            true,
         );
         details.zoomed.add_svg(
             ctx.prerender,
@@ -309,6 +360,7 @@ fn make_timeline(
             0.5,
             Angle::ZERO,
             RewriteColor::NoOp,
+            true,
         );
 
         Btn::svg(
@@ -330,7 +382,7 @@ fn make_timeline(
                     center,
                     Pt2D::forcibly_from_gps(loc.gps, map.get_gps_bounds()),
                 ])
-                .make_arrow(Distance::meters(5.0))
+                .make_arrow(Distance::meters(5.0), ArrowCap::Triangle)
                 .unwrap();
                 details.unzoomed.push(Color::GREEN, arrow.clone());
                 details.zoomed.push(Color::GREEN, arrow.clone());
@@ -344,6 +396,7 @@ fn make_timeline(
             1.0,
             Angle::ZERO,
             RewriteColor::NoOp,
+            true,
         );
         details.zoomed.add_svg(
             ctx.prerender,
@@ -352,6 +405,7 @@ fn make_timeline(
             0.5,
             Angle::ZERO,
             RewriteColor::NoOp,
+            true,
         );
 
         Btn::svg(
@@ -364,23 +418,13 @@ fn make_timeline(
 
     let total_duration_so_far = end_time.unwrap_or_else(|| sim.time()) - phases[0].start_time;
 
-    let total_width = 0.22 * ctx.canvas.window_width;
+    let total_width = 0.22 * ctx.canvas.window_width / ctx.get_scale_factor();
     let mut timeline = Vec::new();
     let num_phases = phases.len();
     let mut elevation = Vec::new();
+    let mut path_impossible = false;
     for (idx, p) in phases.into_iter().enumerate() {
-        let color = match p.phase_type {
-            TripPhaseType::Driving => app.cs.unzoomed_car,
-            TripPhaseType::Walking => app.cs.unzoomed_pedestrian,
-            TripPhaseType::Biking => app.cs.bike_lane,
-            TripPhaseType::Parking => app.cs.parking_trip,
-            TripPhaseType::WaitingForBus(_, _) => app.cs.bus_stop,
-            TripPhaseType::RidingBus(_, _, _) => app.cs.bus_lane,
-            TripPhaseType::Aborted | TripPhaseType::Finished => unreachable!(),
-            TripPhaseType::DelayedStart => Color::YELLOW,
-            TripPhaseType::Remote => Color::PINK,
-        }
-        .alpha(0.7);
+        let color = color_for_trip_phase(app, p.phase_type).alpha(0.7);
 
         let mut txt = Text::from(Line(&p.phase_type.describe(map)));
         txt.add(Line(format!(
@@ -419,10 +463,11 @@ fn make_timeline(
                 normal.add_svg(
                     ctx.prerender,
                     "../data/system/assets/timeline/current_pos.svg",
-                    Pt2D::new(p * phase_width, 7.5),
+                    Pt2D::new(p * phase_width, 7.5 * ctx.get_scale_factor()),
                     1.0,
                     Angle::ZERO,
                     RewriteColor::NoOp,
+                    false,
                 );
             }
         }
@@ -445,10 +490,11 @@ fn make_timeline(
                 TripPhaseType::Remote => "../data/system/assets/timeline/delayed_start.svg",
             },
             // TODO Hardcoded layouting...
-            Pt2D::new(0.5 * phase_width, -20.0),
+            Pt2D::new(0.5 * phase_width, -20.0 * ctx.get_scale_factor()),
             1.0,
             Angle::ZERO,
             RewriteColor::NoOp,
+            false,
         );
 
         let mut hovered = GeomBatch::from(vec![(color.alpha(1.0), rect.clone())]);
@@ -467,7 +513,6 @@ fn make_timeline(
                 .centered_vert(),
         );
 
-        // TODO Could really cache this between live updates
         if let Some((dist, ref path)) = p.path {
             if app.opts.dev
                 && (p.phase_type == TripPhaseType::Walking || p.phase_type == TripPhaseType::Biking)
@@ -481,20 +526,27 @@ fn make_timeline(
                 ));
             }
 
-            if let Some(trace) = path.trace(map, dist, None) {
-                details
-                    .unzoomed
-                    .push(color, trace.make_polygons(Distance::meters(10.0)));
-                details.zoomed.extend(
-                    color,
-                    dashed_lines(
-                        &trace,
-                        Distance::meters(0.75),
-                        Distance::meters(1.0),
-                        Distance::meters(0.4),
-                    ),
-                );
+            // This is expensive, so cache please
+            if idx == open_trip.cached_routes.len() {
+                if let Some(trace) = path.trace(map, dist, None) {
+                    open_trip.cached_routes.push(Some((
+                        trace.make_polygons(Distance::meters(10.0)),
+                        trace.dashed_lines(
+                            Distance::meters(0.75),
+                            Distance::meters(1.0),
+                            Distance::meters(0.4),
+                        ),
+                    )));
+                } else {
+                    open_trip.cached_routes.push(None);
+                }
             }
+            if let Some((ref unzoomed, ref zoomed)) = open_trip.cached_routes[idx] {
+                details.unzoomed.push(color, unzoomed.clone());
+                details.zoomed.extend(color, zoomed.clone());
+            }
+        } else if p.has_path_req {
+            path_impossible = true;
         }
     }
 
@@ -552,6 +604,9 @@ fn make_timeline(
         ])
         .margin_above(5),
     ];
+    if path_impossible {
+        col.push("Map edits have disconnected the path taken before".draw_text(ctx));
+    }
     // TODO This just needs too much more work
     if false {
         col.extend(elevation);
@@ -600,7 +655,7 @@ fn endpoint(endpt: &TripEndpoint, map: &Map) -> (ID, Pt2D, String) {
     match endpt {
         TripEndpoint::Bldg(b) => {
             let bldg = map.get_b(*b);
-            (ID::Building(*b), bldg.label_center, bldg.just_address(map))
+            (ID::Building(*b), bldg.label_center, bldg.address.clone())
         }
         TripEndpoint::Border(i, _) => {
             let i = map.get_i(*i);

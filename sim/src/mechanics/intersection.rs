@@ -1,14 +1,13 @@
 use crate::mechanics::car::Car;
 use crate::mechanics::Queue;
-use crate::{AgentID, AlertLocation, Command, Event, Scheduler, Speed};
+use crate::{AgentID, AlertLocation, CarID, Command, Event, Scheduler, Speed};
 use abstutil::{deserialize_btreemap, retain_btreeset, serialize_btreemap};
-use derivative::Derivative;
 use geom::{Duration, Time};
 use map_model::{
-    ControlStopSign, ControlTrafficSignal, IntersectionID, LaneID, Map, RoadID, TurnID,
-    TurnPriority, TurnType,
+    ControlStopSign, ControlTrafficSignal, IntersectionID, LaneID, Map, RoadID, Traversable,
+    TurnID, TurnPriority, TurnType,
 };
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 const WAIT_AT_STOP_SIGN: Duration = Duration::const_seconds(0.5);
@@ -22,12 +21,11 @@ pub struct IntersectionSimState {
     break_turn_conflict_cycles: bool,
     // (x, y) means x is blocked by y. It's a many-to-many relationship. TODO Better data
     // structure.
-    blocked_by: BTreeSet<(AgentID, AgentID)>,
+    blocked_by: BTreeSet<(CarID, CarID)>,
     events: Vec<Event>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Derivative)]
-#[derivative(PartialEq)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct State {
     id: IntersectionID,
     accepted: BTreeSet<Request>,
@@ -37,6 +35,12 @@ struct State {
         deserialize_with = "deserialize_btreemap"
     )]
     waiting: BTreeMap<Request, Time>,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Clone, Debug)]
+struct Request {
+    agent: AgentID,
+    turn: TurnID,
 }
 
 impl IntersectionSimState {
@@ -92,7 +96,9 @@ impl IntersectionSimState {
             self.wakeup_waiting(now, turn.parent, scheduler, map);
         }
         if self.break_turn_conflict_cycles {
-            retain_btreeset(&mut self.blocked_by, |(_, a)| *a != agent);
+            if let AgentID::Car(car) = agent {
+                retain_btreeset(&mut self.blocked_by, |(_, c)| *c != car);
+            }
         }
     }
 
@@ -101,9 +107,9 @@ impl IntersectionSimState {
         let state = self.state.get_mut(&turn.parent).unwrap();
         state.waiting.remove(&Request { agent, turn });
         if self.break_turn_conflict_cycles {
-            retain_btreeset(&mut self.blocked_by, |(a1, a2)| {
-                *a1 != agent && *a2 != agent
-            });
+            if let AgentID::Car(car) = agent {
+                retain_btreeset(&mut self.blocked_by, |(c1, c2)| *c1 != car && *c2 != car);
+            }
         }
     }
 
@@ -115,6 +121,12 @@ impl IntersectionSimState {
         map: &Map,
     ) {
         self.wakeup_waiting(now, i, scheduler, map);
+    }
+
+    // Vanished at border, stopped biking, etc -- a vehicle disappeared, and didn't have one last
+    // turn.
+    pub fn vehicle_gone(&mut self, car: CarID) {
+        retain_btreeset(&mut self.blocked_by, |(c1, c2)| *c1 != car && *c2 != car);
     }
 
     fn wakeup_waiting(&self, now: Time, i: IntersectionID, scheduler: &mut Scheduler, map: &Map) {
@@ -211,78 +223,72 @@ impl IntersectionSimState {
         now: Time,
         map: &Map,
         scheduler: &mut Scheduler,
-        maybe_car_and_target_queue: Option<(&mut Queue, &Car)>,
+        maybe_cars_and_queues: Option<(
+            &Car,
+            &BTreeMap<CarID, Car>,
+            &mut BTreeMap<Traversable, Queue>,
+        )>,
     ) -> bool {
-        //let debug = turn.parent == IntersectionID(64);
         let req = Request { agent, turn };
-        let state = self.state.get_mut(&turn.parent).unwrap();
-        state.waiting.entry(req.clone()).or_insert(now);
+        self.state
+            .get_mut(&turn.parent)
+            .unwrap()
+            .waiting
+            .entry(req.clone())
+            .or_insert(now);
 
+        let readonly_pair = maybe_cars_and_queues.as_ref().map(|(_, c, q)| (*c, &**q));
         let allowed = if self.use_freeform_policy_everywhere {
-            state.freeform_policy(
-                &req,
-                map,
-                &mut self.events,
-                if self.break_turn_conflict_cycles {
-                    Some(&mut self.blocked_by)
-                } else {
-                    None
-                },
-            )
-        } else if let Some(ref signal) = map.maybe_get_traffic_signal(state.id) {
-            state.traffic_signal_policy(
-                signal,
-                &req,
-                speed,
-                now,
-                map,
-                scheduler,
-                &mut self.events,
-                if self.break_turn_conflict_cycles {
-                    Some(&mut self.blocked_by)
-                } else {
-                    None
-                },
-            )
-        } else if let Some(ref sign) = map.maybe_get_stop_sign(state.id) {
-            state.stop_sign_policy(
-                sign,
-                &req,
-                now,
-                map,
-                scheduler,
-                &mut self.events,
-                if self.break_turn_conflict_cycles {
-                    Some(&mut self.blocked_by)
-                } else {
-                    None
-                },
-            )
+            self.freeform_policy(&req, map, readonly_pair)
+        } else if let Some(ref signal) = map.maybe_get_traffic_signal(turn.parent) {
+            self.traffic_signal_policy(&req, map, signal, speed, now, scheduler, readonly_pair)
+        } else if let Some(ref sign) = map.maybe_get_stop_sign(turn.parent) {
+            self.stop_sign_policy(&req, map, sign, now, scheduler, readonly_pair)
         } else {
             unreachable!()
         };
         if !allowed {
-            /*if debug {
-                println!("{}: {} can't go yet", now, agent)
-            };*/
             return false;
         }
 
         // Don't block the box
-        if let Some((queue, car)) = maybe_car_and_target_queue {
-            if !queue.try_to_reserve_entry(car, !self.dont_block_the_box) {
-                /*if debug {
-                    println!("{}: {} can't block box", now, agent)
-                };*/
+        if let Some((car, _, queues)) = maybe_cars_and_queues {
+            assert_eq!(agent, AgentID::Car(car.vehicle.id));
+            let queue = queues.get_mut(&Traversable::Lane(turn.dst)).unwrap();
+            if !queue.try_to_reserve_entry(
+                car,
+                !self.dont_block_the_box
+                    || allow_block_the_box(map.get_i(turn.parent).orig_id.osm_node_id),
+            ) {
+                if self.break_turn_conflict_cycles {
+                    // TODO Should we run the detector here?
+                    if let Some(c) = queue.laggy_head {
+                        self.blocked_by.insert((car.vehicle.id, c));
+                    } else if let Some(c) = queue.cars.get(0) {
+                        self.blocked_by.insert((car.vehicle.id, *c));
+                    } else {
+                        // Nobody's in the target lane, but there's somebody already in the
+                        // intersection headed there, taking up all of the space.
+                        self.blocked_by.insert((
+                            car.vehicle.id,
+                            self.state[&turn.parent]
+                                .accepted
+                                .iter()
+                                .find(|r| r.turn.dst == turn.dst)
+                                .unwrap()
+                                .agent
+                                .as_car(),
+                        ));
+                    }
+                }
+
                 return false;
             }
         }
 
-        // TODO Sometimes we forge ahead and allow conflicts
-        //assert!(!state.any_accepted_conflict_with(turn, map));
-
         // TODO For now, we're only interested in signals, and there's too much raw data to store
         // for stop signs too.
+        let state = self.state.get_mut(&turn.parent).unwrap();
         let delay = now - state.waiting.remove(&req).unwrap();
         if map.maybe_get_traffic_signal(state.id).is_some() {
             self.events
@@ -290,12 +296,11 @@ impl IntersectionSimState {
         }
         state.accepted.insert(req);
         if self.break_turn_conflict_cycles {
-            retain_btreeset(&mut self.blocked_by, |(a, _)| *a != agent);
+            if let AgentID::Car(car) = agent {
+                retain_btreeset(&mut self.blocked_by, |(c, _)| *c != car);
+            }
         }
 
-        /*if debug {
-            println!("{}: {} going!", now, agent)
-        };*/
         true
     }
 
@@ -316,6 +321,18 @@ impl IntersectionSimState {
             .iter()
             .map(|req| req.agent)
             .collect()
+    }
+
+    pub fn get_blocked_by(&self, a: AgentID) -> HashSet<AgentID> {
+        let mut blocked_by = HashSet::new();
+        if let AgentID::Car(c) = a {
+            for (c1, c2) in &self.blocked_by {
+                if *c1 == c {
+                    blocked_by.insert(AgentID::Car(*c2));
+                }
+            }
+        }
+        blocked_by
     }
 
     pub fn collect_events(&mut self) -> Vec<Event> {
@@ -375,83 +392,33 @@ impl IntersectionSimState {
     }
 }
 
-impl State {
-    // If true, the request can go.
-    fn handle_accepted_conflicts(
-        &self,
-        req: &Request,
-        map: &Map,
-        events: &mut Vec<Event>,
-        mut maybe_blocked_by: Option<&mut BTreeSet<(AgentID, AgentID)>>,
-    ) -> bool {
-        let turn = map.get_t(req.turn);
-        let mut ok = true;
-        for other in &self.accepted {
-            if map.get_t(other.turn).conflicts_with(turn) {
-                ok = false;
-
-                if let Some(ref mut blocked_by) = maybe_blocked_by {
-                    blocked_by.insert((req.agent, other.agent));
-
-                    // Do we have a dependency cycle?
-                    let mut queue = vec![req.agent];
-                    let mut seen = HashSet::new();
-                    while !queue.is_empty() {
-                        let current = queue.pop().unwrap();
-                        if !seen.is_empty() && current == req.agent {
-                            events.push(Event::Alert(
-                                AlertLocation::Intersection(req.turn.parent),
-                                format!("Turn conflict cycle involving {:?}", seen),
-                            ));
-                            return true;
-                        }
-                        // Because the blocked-by relation is many-to-many, this might happen.
-                        // Might not actually be a cycle. Insist on seeing the original req.agent
-                        // again.
-                        if !seen.contains(&current) {
-                            seen.insert(current);
-
-                            for (a1, a2) in blocked_by.iter() {
-                                if *a1 == current {
-                                    queue.push(*a2);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        ok
-    }
-
+impl IntersectionSimState {
     fn freeform_policy(
-        &self,
+        &mut self,
         req: &Request,
         map: &Map,
-        events: &mut Vec<Event>,
-        maybe_blocked_by: Option<&mut BTreeSet<(AgentID, AgentID)>>,
+        maybe_cars_and_queues: Option<(&BTreeMap<CarID, Car>, &BTreeMap<Traversable, Queue>)>,
     ) -> bool {
         // Allow concurrent turns that don't conflict
-        self.handle_accepted_conflicts(req, map, events, maybe_blocked_by)
+        self.handle_accepted_conflicts(req, map, maybe_cars_and_queues)
     }
 
     fn stop_sign_policy(
-        &self,
-        sign: &ControlStopSign,
+        &mut self,
         req: &Request,
-        now: Time,
         map: &Map,
+        sign: &ControlStopSign,
+        now: Time,
         scheduler: &mut Scheduler,
-        events: &mut Vec<Event>,
-        maybe_blocked_by: Option<&mut BTreeSet<(AgentID, AgentID)>>,
+        maybe_cars_and_queues: Option<(&BTreeMap<CarID, Car>, &BTreeMap<Traversable, Queue>)>,
     ) -> bool {
-        if !self.handle_accepted_conflicts(req, map, events, maybe_blocked_by) {
+        if !self.handle_accepted_conflicts(req, map, maybe_cars_and_queues) {
             return false;
         }
 
         let our_priority = sign.get_priority(req.turn, map);
         assert!(our_priority != TurnPriority::Banned);
-        let our_time = self.waiting[req];
+        let our_time = self.state[&req.turn.parent].waiting[req];
 
         if our_priority == TurnPriority::Yield && now < our_time + WAIT_AT_STOP_SIGN {
             // Since we have "ownership" of scheduling for req.agent, don't need to use
@@ -483,15 +450,14 @@ impl State {
     }
 
     fn traffic_signal_policy(
-        &self,
-        signal: &ControlTrafficSignal,
+        &mut self,
         req: &Request,
+        map: &Map,
+        signal: &ControlTrafficSignal,
         speed: Speed,
         now: Time,
-        map: &Map,
         scheduler: &mut Scheduler,
-        events: &mut Vec<Event>,
-        maybe_blocked_by: Option<&mut BTreeSet<(AgentID, AgentID)>>,
+        maybe_cars_and_queues: Option<(&BTreeMap<CarID, Car>, &BTreeMap<Traversable, Queue>)>,
     ) -> bool {
         let turn = map.get_t(req.turn);
 
@@ -509,11 +475,11 @@ impl State {
         }
 
         // Somebody might already be doing a Yield turn that conflicts with this one.
-        if !self.handle_accepted_conflicts(req, map, events, maybe_blocked_by) {
+        if !self.handle_accepted_conflicts(req, map, maybe_cars_and_queues) {
             return false;
         }
 
-        let our_time = self.waiting[req];
+        let our_time = self.state[&req.turn.parent].waiting[req];
         if our_priority == TurnPriority::Yield
             && now < our_time + WAIT_BEFORE_YIELD_AT_TRAFFIC_SIGNAL
         {
@@ -541,7 +507,7 @@ impl State {
         if time_to_cross > remaining_phase_time {
             // Actually, we might have bigger problems...
             if time_to_cross > phase.duration {
-                events.push(Event::Alert(
+                self.events.push(Event::Alert(
                     AlertLocation::Intersection(req.turn.parent),
                     format!(
                         "{:?} is impossible to fit into phase duration of {}",
@@ -555,10 +521,142 @@ impl State {
 
         true
     }
+
+    // If true, the request can go.
+    fn handle_accepted_conflicts(
+        &mut self,
+        req: &Request,
+        map: &Map,
+        maybe_cars_and_queues: Option<(&BTreeMap<CarID, Car>, &BTreeMap<Traversable, Queue>)>,
+    ) -> bool {
+        let turn = map.get_t(req.turn);
+        let mut cycle_detected = false;
+        let mut ok = true;
+        for other in &self.state[&req.turn.parent].accepted {
+            // Never short-circuit; always record all of the dependencies; it might help someone
+            // else unstick things.
+            if map.get_t(other.turn).conflicts_with(turn) {
+                if self.break_turn_conflict_cycles {
+                    if let AgentID::Car(c) = req.agent {
+                        if let AgentID::Car(c2) = other.agent {
+                            self.blocked_by.insert((c, c2));
+                        }
+                        if !cycle_detected {
+                            if let Some(cycle) =
+                                self.detect_conflict_cycle(c, maybe_cars_and_queues.unwrap())
+                            {
+                                // Allow the conflicting turn!
+                                self.events.push(Event::Alert(
+                                    AlertLocation::Intersection(req.turn.parent),
+                                    format!("Turn conflict cycle involving {:?}", cycle),
+                                ));
+                                cycle_detected = true;
+                            }
+                        }
+                    }
+                }
+
+                if !cycle_detected
+                    && !allow_conflicting_turns(map.get_i(req.turn.parent).orig_id.osm_node_id)
+                {
+                    ok = false;
+                }
+
+                // It's never safe for two vehicles to go for the same lane.
+                if turn.id.dst == other.turn.dst {
+                    return false;
+                }
+            }
+        }
+        ok
+    }
+
+    fn detect_conflict_cycle(
+        &self,
+        car: CarID,
+        pair: (&BTreeMap<CarID, Car>, &BTreeMap<Traversable, Queue>),
+    ) -> Option<HashSet<CarID>> {
+        let (cars, queues) = pair;
+
+        let mut queue = vec![car];
+        let mut seen = HashSet::new();
+        while !queue.is_empty() {
+            let current = queue.pop().unwrap();
+            // Might not actually be a cycle. Insist on seeing the original req.agent
+            // again.
+            if !seen.is_empty() && current == car {
+                return Some(seen);
+            }
+            if !seen.contains(&current) {
+                seen.insert(current);
+
+                for (c1, c2) in &self.blocked_by {
+                    if *c1 == current {
+                        queue.push(*c2);
+                    }
+                }
+
+                // If this car isn't the head of its queue, add that dependency. (Except for
+                // the original car, which we already know is the head of its queue)
+                // TODO Maybe store this in blocked_by?
+                if current != car {
+                    let q = &queues[&cars[&current].router.head()];
+                    let head = if let Some(c) = q.laggy_head {
+                        c
+                    } else {
+                        *q.cars.get(0).unwrap()
+                    };
+                    if current != head {
+                        queue.push(head);
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Clone, Debug)]
-struct Request {
-    agent: AgentID,
-    turn: TurnID,
+// TODO Sometimes a traffic signal is surrounded by tiny lanes with almost no capacity. Workaround
+// for now.
+fn allow_block_the_box(osm_node_id: i64) -> bool {
+    // 23rd and Madison
+    osm_node_id == 53211694 || osm_node_id == 53211693 ||
+    // 31st and S Jackson
+    osm_node_id == 53045512 ||
+    // 23rd and Rainier
+    osm_node_id == 53212741 || osm_node_id == 3496255252 ||
+    // Rainier and Dearborn
+    osm_node_id == 4607162574 ||
+    // WA 509 and WA 99
+    osm_node_id == 31327525 ||
+    // 45th and Union Bay
+    osm_node_id == 31192107 || osm_node_id == 4272330879 || osm_node_id == 53120147 ||
+    // 45th and Montlake
+    osm_node_id ==  31430639 || osm_node_id == 29977895 || osm_node_id == 3391705317 ||
+    osm_node_id == 29977897 ||
+    // Rainier and Brandon
+    osm_node_id == 53089293 ||
+    // Rainier and Letitia
+    osm_node_id == 1729797719 || osm_node_id == 4272388873 || osm_node_id == 53194882 ||
+    // Rainier and MLK
+    osm_node_id == 53131428 ||
+    // Montlake and 520
+    osm_node_id == 53128053
+}
+
+// TODO Various problems (bad geometry, multi-intersection turn restrictions) cause
+// vehicles to unrealistically block each other.
+#[rustfmt::skip]
+fn allow_conflicting_turns(osm_node_id: i64) -> bool {
+    vec![
+        // Montlake and 520
+        29449863, 29464223, 3391701882, 3391701883,
+        // Boyer and Lynn
+        3978753095,
+        // WA 509 and WA 99
+        31253092,
+        // 52nd and Holly
+        4263867891, 4263867898, 4263867908, 4263867899
+    ]
+    .contains(&osm_node_id)
 }

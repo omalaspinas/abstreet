@@ -4,7 +4,6 @@ use crate::helpers::ID;
 use crate::render::area::DrawArea;
 use crate::render::building::DrawBuilding;
 use crate::render::bus_stop::DrawBusStop;
-use crate::render::extra_shape::{DrawExtraShape, ExtraShapeID};
 use crate::render::intersection::DrawIntersection;
 use crate::render::lane::DrawLane;
 use crate::render::road::DrawRoad;
@@ -12,10 +11,10 @@ use crate::render::{draw_vehicle, DrawPedCrowd, DrawPedestrian, Renderable};
 use aabb_quadtree::QuadTree;
 use abstutil::Timer;
 use ezgui::{Color, Drawable, EventCtx, GeomBatch, GfxCtx, Prerender};
-use geom::{Bounds, Circle, Distance, FindClosest, Pt2D, Time};
+use geom::{Bounds, Circle, Distance, Pt2D, Time};
 use map_model::{
-    AreaID, BuildingID, BusStopID, DirectedRoadID, Intersection, IntersectionID, LaneID, Map, Road,
-    RoadID, Traversable, NORMAL_LANE_THICKNESS,
+    AreaID, BuildingID, BusStopID, Intersection, IntersectionID, LaneID, Map, Road, RoadID,
+    Traversable, NORMAL_LANE_THICKNESS, SIDEWALK_THICKNESS,
 };
 use sim::{GetDrawAgents, UnzoomedAgent, VehicleType};
 use std::borrow::Borrow;
@@ -27,7 +26,6 @@ pub struct DrawMap {
     pub lanes: Vec<DrawLane>,
     pub intersections: Vec<DrawIntersection>,
     pub buildings: Vec<DrawBuilding>,
-    pub extra_shapes: Vec<DrawExtraShape>,
     pub bus_stops: HashMap<BusStopID, DrawBusStop>,
     pub areas: Vec<DrawArea>,
 
@@ -39,6 +37,7 @@ pub struct DrawMap {
     pub draw_all_unzoomed_intersections: Drawable,
     pub draw_all_buildings: Drawable,
     pub draw_all_building_paths: Drawable,
+    pub draw_all_building_outlines: Drawable,
     pub draw_all_areas: Drawable,
 
     quadtree: QuadTree<ID>,
@@ -61,7 +60,7 @@ impl DrawMap {
 
         timer.start("generate thick roads");
         let mut road_refs: Vec<&Road> = map.all_roads().iter().collect();
-        road_refs.sort_by_key(|r| r.get_zorder());
+        road_refs.sort_by_key(|r| r.zorder);
         let mut all_roads = GeomBatch::new();
         for r in road_refs {
             all_roads.push(
@@ -130,6 +129,7 @@ impl DrawMap {
         let mut buildings: Vec<DrawBuilding> = Vec::new();
         let mut all_buildings = GeomBatch::new();
         let mut all_building_paths = GeomBatch::new();
+        let mut all_building_outlines = GeomBatch::new();
         timer.start_iter("make DrawBuildings", map.all_buildings().len());
         for b in map.all_buildings() {
             timer.next();
@@ -138,55 +138,15 @@ impl DrawMap {
                 cs,
                 &mut all_buildings,
                 &mut all_building_paths,
+                &mut all_building_outlines,
                 ctx.prerender,
             ));
         }
         timer.start("upload all buildings");
         let draw_all_buildings = all_buildings.upload(ctx);
         let draw_all_building_paths = all_building_paths.upload(ctx);
+        let draw_all_building_outlines = all_building_outlines.upload(ctx);
         timer.stop("upload all buildings");
-
-        let mut extra_shapes: Vec<DrawExtraShape> = Vec::new();
-        if let Some(ref path) = flags.kml {
-            let raw_shapes = if path.ends_with(".kml") {
-                kml::load(&path, &map.get_gps_bounds(), timer)
-                    .expect("Couldn't load extra KML shapes")
-                    .shapes
-            } else {
-                let shapes: kml::ExtraShapes = abstutil::read_binary(path.clone(), timer);
-                shapes.shapes
-            };
-
-            let mut closest: FindClosest<DirectedRoadID> = FindClosest::new(&map.get_bounds());
-            for r in map.all_roads().iter() {
-                closest.add(
-                    r.id.forwards(),
-                    map.right_shift(r.center_pts.clone(), NORMAL_LANE_THICKNESS)
-                        .get(timer)
-                        .points(),
-                );
-                closest.add(
-                    r.id.backwards(),
-                    map.left_shift(r.center_pts.clone(), NORMAL_LANE_THICKNESS)
-                        .get(timer)
-                        .points(),
-                );
-            }
-
-            let gps_bounds = map.get_gps_bounds();
-            for s in raw_shapes.into_iter() {
-                if let Some(es) = DrawExtraShape::new(
-                    ExtraShapeID(extra_shapes.len()),
-                    s,
-                    gps_bounds,
-                    &closest,
-                    ctx.prerender,
-                    cs,
-                ) {
-                    extra_shapes.push(es);
-                }
-            }
-        }
 
         timer.start_iter("make DrawBusStop", map.all_bus_stops().len());
         let mut bus_stops: HashMap<BusStopID, DrawBusStop> = HashMap::new();
@@ -226,9 +186,6 @@ impl DrawMap {
         for obj in &buildings {
             quadtree.insert_with_box(obj.get_id(), obj.get_outline(map).get_bounds().as_bbox());
         }
-        for obj in &extra_shapes {
-            quadtree.insert_with_box(obj.get_id(), obj.get_outline(map).get_bounds().as_bbox());
-        }
         // Don't put BusStops in the quadtree
         for obj in &areas {
             quadtree.insert_with_box(obj.get_id(), obj.get_outline(map).get_bounds().as_bbox());
@@ -245,7 +202,6 @@ impl DrawMap {
             lanes,
             intersections,
             buildings,
-            extra_shapes,
             bus_stops,
             areas,
             boundary_polygon,
@@ -253,6 +209,7 @@ impl DrawMap {
             draw_all_unzoomed_intersections,
             draw_all_buildings,
             draw_all_building_paths,
+            draw_all_building_outlines,
             draw_all_areas,
 
             agents: RefCell::new(AgentCache {
@@ -280,10 +237,6 @@ impl DrawMap {
 
     pub fn get_b(&self, id: BuildingID) -> &DrawBuilding {
         &self.buildings[id.0]
-    }
-
-    pub fn get_es(&self, id: ExtraShapeID) -> &DrawExtraShape {
-        &self.extra_shapes[id.0]
     }
 
     pub fn get_bs(&self, id: BusStopID) -> &DrawBusStop {
@@ -333,9 +286,6 @@ impl DrawMap {
                     .get_draw_ped(members[0], &app.primary.map)?
                     .on
             }
-            ID::ExtraShape(id) => {
-                return Some(self.get_es(id));
-            }
             ID::BusStop(id) => {
                 return Some(self.get_bs(id));
             }
@@ -366,7 +316,7 @@ pub struct AgentCache {
     time: Option<Time>,
     agents_per_on: HashMap<Traversable, Vec<Box<dyn Renderable>>>,
     // agent radius also matters
-    unzoomed: Option<(Time, Distance, AgentColorScheme, Drawable)>,
+    unzoomed: Option<(Time, Option<Distance>, AgentColorScheme, Drawable)>,
 }
 
 impl AgentCache {
@@ -421,28 +371,46 @@ impl AgentCache {
         map: &Map,
         acs: &AgentColorScheme,
         g: &mut GfxCtx,
-        radius: Distance,
+        maybe_radius: Option<Distance>,
     ) {
         let now = source.time();
         if let Some((time, r, ref orig_acs, ref draw)) = self.unzoomed {
-            if now == time && radius == r && acs == orig_acs {
+            if now == time && maybe_radius == r && acs == orig_acs {
                 g.redraw(draw);
                 return;
             }
         }
 
-        // It's quite silly to produce triangles for the same circle over and over again. ;)
-        let circle = Circle::new(Pt2D::new(0.0, 0.0), radius).to_polygon();
         let mut batch = GeomBatch::new();
-        for agent in source.get_unzoomed_agents(map) {
-            if let Some(color) = acs.color(&agent) {
-                batch.push(color, circle.translate(agent.pos.x(), agent.pos.y()));
+        // It's quite silly to produce triangles for the same circle over and over again. ;)
+        if let Some(r) = maybe_radius {
+            let circle = Circle::new(Pt2D::new(0.0, 0.0), r).to_polygon();
+            for agent in source.get_unzoomed_agents(map) {
+                if let Some(color) = acs.color(&agent) {
+                    batch.push(color, circle.translate(agent.pos.x(), agent.pos.y()));
+                }
+            }
+        } else {
+            // Lane thickness is a little hard to see, so double it. Most of the time, the circles
+            // don't leak out of the road too much.
+            let car_circle =
+                Circle::new(Pt2D::new(0.0, 0.0), 4.0 * NORMAL_LANE_THICKNESS).to_polygon();
+            let ped_circle =
+                Circle::new(Pt2D::new(0.0, 0.0), 4.0 * SIDEWALK_THICKNESS).to_polygon();
+            for agent in source.get_unzoomed_agents(map) {
+                if let Some(color) = acs.color(&agent) {
+                    if agent.vehicle_type.is_some() {
+                        batch.push(color, car_circle.translate(agent.pos.x(), agent.pos.y()));
+                    } else {
+                        batch.push(color, ped_circle.translate(agent.pos.x(), agent.pos.y()));
+                    }
+                }
             }
         }
 
         let draw = g.upload(batch);
         g.redraw(&draw);
-        self.unzoomed = Some((now, radius, acs.clone(), draw));
+        self.unzoomed = Some((now, maybe_radius, acs.clone(), draw));
     }
 }
 

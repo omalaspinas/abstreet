@@ -1,6 +1,6 @@
 use crate::{BuildingID, LaneID, LaneType, Map, TurnID};
 use geom::{Angle, Distance, PolyLine, Pt2D, Speed};
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,14 +167,14 @@ impl Traversable {
 
     pub fn speed_limit(&self, map: &Map) -> Speed {
         match *self {
-            Traversable::Lane(id) => map.get_parent(id).get_speed_limit(),
-            Traversable::Turn(id) => map.get_parent(id.dst).get_speed_limit(),
+            Traversable::Lane(id) => map.get_parent(id).speed_limit,
+            Traversable::Turn(id) => map.get_parent(id.dst).speed_limit,
         }
     }
 
     pub fn get_zorder(&self, map: &Map) -> isize {
         match *self {
-            Traversable::Lane(id) => map.get_parent(id).get_zorder(),
+            Traversable::Lane(id) => map.get_parent(id).zorder,
             Traversable::Turn(id) => map.get_i(id.parent).get_zorder(map),
         }
     }

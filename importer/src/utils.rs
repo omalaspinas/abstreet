@@ -1,3 +1,4 @@
+use abstutil::Timer;
 use std::path::Path;
 use std::process::Command;
 
@@ -9,14 +10,24 @@ pub fn download(output: &str, url: &str) {
         println!("- {} already exists", output);
         return;
     }
-    println!("- Missing {}, so downloading {}", output, url);
+    // Create the directory
+    std::fs::create_dir_all(Path::new(output).parent().unwrap())
+        .expect("Creating parent dir failed");
+
     let tmp = "tmp_output";
-    run(Command::new("curl")
-        .arg("--fail")
-        .arg("-L")
-        .arg("-o")
-        .arg(tmp)
-        .arg(url));
+    if url.ends_with(".kml") && Path::new(&output.replace(".bin", ".kml")).exists() {
+        run(Command::new("cp")
+            .arg(output.replace(".bin", ".kml"))
+            .arg(tmp));
+    } else {
+        println!("- Missing {}, so downloading {}", output, url);
+        run(Command::new("curl")
+            .arg("--fail")
+            .arg("-L")
+            .arg("-o")
+            .arg(tmp)
+            .arg(url));
+    }
 
     // Argh the Dropbox URL is .zip?dl=0
     if url.contains(".zip") {
@@ -42,7 +53,11 @@ pub fn download(output: &str, url: &str) {
         )
         .unwrap();
         abstutil::write_binary(output.to_string(), &shapes);
-        rm(tmp);
+        // Keep the intermediate file; otherwise we inadvertently grab new upstream data when
+        // changing some binary formats
+        run(Command::new("mv")
+            .arg(tmp)
+            .arg(output.replace(".bin", ".kml")));
     } else {
         run(Command::new("mv").arg(tmp).arg(output));
     }
@@ -87,10 +102,13 @@ fn run(cmd: &mut Command) {
 }
 
 // Converts a RawMap to a Map.
-pub fn raw_to_map(name: &str, use_fixes: bool) {
-    let mut timer = abstutil::Timer::new(format!("Raw->Map for {}", name));
-    let map = map_model::Map::new(abstutil::path_raw_map(name), use_fixes, &mut timer);
+pub fn raw_to_map(name: &str, build_ch: bool, timer: &mut Timer) -> map_model::Map {
+    timer.start(format!("Raw->Map for {}", name));
+    let raw: map_model::raw::RawMap = abstutil::read_binary(abstutil::path_raw_map(name), timer);
+    let map = map_model::Map::create_from_raw(raw, build_ch, timer);
     timer.start("save map");
     map.save();
     timer.stop("save map");
+    timer.stop(format!("Raw->Map for {}", name));
+    map
 }

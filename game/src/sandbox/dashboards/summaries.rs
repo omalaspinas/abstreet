@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::game::{State, Transition};
+use crate::game::{DrawBaselayer, State, Transition};
 use crate::helpers::color_for_mode;
 use crate::sandbox::dashboards::DashTab;
 use abstutil::prettyprint_usize;
@@ -46,7 +46,7 @@ impl TripSummaries {
         Box::new(TripSummaries {
             composite: Composite::new(
                 Widget::col(vec![
-                    DashTab::TripSummaries.picker(ctx),
+                    DashTab::TripSummaries.picker(ctx, app),
                     Widget::row(filters).centered_horiz().margin_below(10),
                     summary(ctx, app, &filter).margin_below(10),
                     Widget::row(vec![
@@ -60,7 +60,7 @@ impl TripSummaries {
                 .bg(app.cs.panel_bg)
                 .padding(10),
             )
-            .max_size_percent(90, 90)
+            .exact_size_percent(90, 90)
             .build(ctx),
             filter,
         })
@@ -90,8 +90,12 @@ impl State for TripSummaries {
         }
     }
 
+    fn draw_baselayer(&self) -> DrawBaselayer {
+        DrawBaselayer::Custom
+    }
+
     fn draw(&self, g: &mut GfxCtx, app: &App) {
-        State::grey_out_map(g, app);
+        g.clear(app.cs.grass);
         self.composite.draw(g);
     }
 }

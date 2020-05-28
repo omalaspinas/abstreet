@@ -1,5 +1,7 @@
 mod driving;
 mod node_map;
+// TODO tmp
+pub mod uber_turns;
 mod walking;
 
 pub use self::driving::cost;
@@ -9,8 +11,8 @@ use crate::{
     osm, BusRouteID, BusStopID, Lane, LaneID, LaneType, Map, Position, Traversable, TurnID,
 };
 use abstutil::Timer;
-use geom::{Distance, PolyLine};
-use serde_derive::{Deserialize, Serialize};
+use geom::{Distance, PolyLine, EPSILON_DIST};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt;
 
@@ -103,7 +105,10 @@ impl Path {
     pub(crate) fn new(map: &Map, steps: Vec<PathStep>, end_dist: Distance) -> Path {
         // Haven't seen problems here in a very long time. Noticeably saves some time to skip.
         if false {
-            validate(map, &steps);
+            validate_continuity(map, &steps);
+        }
+        if false {
+            validate_restrictions(map, &steps);
         }
         // Slightly expensive, but the contraction hierarchy weights aren't distances.
         let mut total_length = Distance::ZERO;
@@ -399,7 +404,7 @@ impl fmt::Display for PathRequest {
     }
 }
 
-fn validate(map: &Map, steps: &Vec<PathStep>) {
+fn validate_continuity(map: &Map, steps: &Vec<PathStep>) {
     if steps.is_empty() {
         panic!("Empty Path");
     }
@@ -415,7 +420,7 @@ fn validate(map: &Map, steps: &Vec<PathStep>) {
             PathStep::Turn(id) => map.get_t(id).geom.first_pt(),
         };
         let len = from.dist_to(to);
-        if len > Distance::ZERO {
+        if len > EPSILON_DIST {
             println!("All steps in invalid path:");
             for s in steps {
                 match s {
@@ -438,6 +443,27 @@ fn validate(map: &Map, steps: &Vec<PathStep>) {
                 "pathfind() returned path that warps {} from {:?} to {:?}",
                 len, pair[0], pair[1]
             );
+        }
+    }
+}
+
+fn validate_restrictions(map: &Map, steps: &Vec<PathStep>) {
+    for triple in steps.windows(5) {
+        if let (PathStep::Lane(l1), PathStep::Lane(l2), PathStep::Lane(l3)) =
+            (triple[0], triple[2], triple[4])
+        {
+            let from = map.get_parent(l1);
+            let via = map.get_l(l2).parent;
+            let to = map.get_l(l3).parent;
+
+            for (dont_via, dont_to) in &from.complicated_turn_restrictions {
+                if via == *dont_via && to == *dont_to {
+                    panic!(
+                        "Some path does illegal uber-turn: {} -> {} -> {}",
+                        l1, l2, l3
+                    );
+                }
+            }
         }
     }
 }

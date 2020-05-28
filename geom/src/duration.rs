@@ -1,8 +1,8 @@
 use crate::{trim_f64, Distance, Speed};
 use abstutil::elapsed_seconds;
 use instant::Instant;
-use serde_derive::{Deserialize, Serialize};
-use std::{cmp, f64, ops};
+use serde::{Deserialize, Serialize};
+use std::{cmp, ops};
 
 // In seconds. Can be negative.
 // TODO Naming is awkward. Can represent a moment in time or a duration.

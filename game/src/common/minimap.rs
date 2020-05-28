@@ -1,8 +1,7 @@
 use crate::app::App;
-use crate::common::{navigate, shortcuts, Warping};
+use crate::common::{navigate, Warping};
 use crate::game::Transition;
-use crate::layer::Layers;
-use crate::render::MIN_ZOOM_FOR_DETAIL;
+use crate::layer::PickLayer;
 use abstutil::clamp;
 use ezgui::{
     hotkey, Btn, Checkbox, Color, Composite, EventCtx, Filler, GeomBatch, GfxCtx,
@@ -35,8 +34,8 @@ impl Minimap {
         Minimap {
             dragging: false,
             composite: make_minimap_panel(ctx, app, 0),
-            zoomed: ctx.canvas.cam_zoom >= MIN_ZOOM_FOR_DETAIL,
-            layer: app.layer.is_empty(),
+            zoomed: ctx.canvas.cam_zoom >= app.opts.min_zoom_for_detail,
+            layer: app.layer.is_none(),
 
             zoom_lvl: 0,
             base_zoom,
@@ -53,9 +52,9 @@ impl Minimap {
         self.composite = make_minimap_panel(ctx, app, self.zoom_lvl);
     }
 
-    pub fn event(&mut self, app: &mut App, ctx: &mut EventCtx) -> Option<Transition> {
-        let zoomed = ctx.canvas.cam_zoom >= MIN_ZOOM_FOR_DETAIL;
-        let layer = app.layer.is_empty();
+    pub fn event(&mut self, ctx: &mut EventCtx, app: &mut App) -> Option<Transition> {
+        let zoomed = ctx.canvas.cam_zoom >= app.opts.min_zoom_for_detail;
+        let layer = app.layer.is_none();
         if zoomed != self.zoomed || layer != self.layer {
             self.zoomed = zoomed;
             self.layer = layer;
@@ -65,10 +64,22 @@ impl Minimap {
         let pan_speed = 100.0;
         match self.composite.event(ctx) {
             Some(Outcome::Clicked(x)) => match x {
-                x if x == "pan up" => self.offset_y -= pan_speed * self.zoom,
-                x if x == "pan down" => self.offset_y += pan_speed * self.zoom,
-                x if x == "pan left" => self.offset_x -= pan_speed * self.zoom,
-                x if x == "pan right" => self.offset_x += pan_speed * self.zoom,
+                x if x == "pan up" => {
+                    self.offset_y -= pan_speed * self.zoom;
+                    return Some(Transition::KeepWithMouseover);
+                }
+                x if x == "pan down" => {
+                    self.offset_y += pan_speed * self.zoom;
+                    return Some(Transition::KeepWithMouseover);
+                }
+                x if x == "pan left" => {
+                    self.offset_x -= pan_speed * self.zoom;
+                    return Some(Transition::KeepWithMouseover);
+                }
+                x if x == "pan right" => {
+                    self.offset_x += pan_speed * self.zoom;
+                    return Some(Transition::KeepWithMouseover);
+                }
                 // TODO Make the center of the cursor still point to the same thing. Same math as
                 // Canvas.
                 x if x == "zoom in" => {
@@ -96,9 +107,6 @@ impl Minimap {
                 x if x == "search" => {
                     return Some(Transition::Push(navigate::Navigator::new(ctx, app)));
                 }
-                x if x == "shortcuts" => {
-                    return Some(Transition::Push(shortcuts::ChoosingShortcut::new()));
-                }
                 x if x == "zoom out fully" => {
                     return Some(Transition::Push(Warping::new(
                         ctx,
@@ -118,7 +126,7 @@ impl Minimap {
                     )));
                 }
                 x if x == "change layers" => {
-                    return Layers::change_layers(ctx, app);
+                    return Some(Transition::Push(PickLayer::pick(ctx, app)));
                 }
                 _ => unreachable!(),
             },
@@ -197,7 +205,9 @@ impl Minimap {
         g.redraw(&app.primary.draw_map.draw_all_unzoomed_intersections);
         g.redraw(&app.primary.draw_map.draw_all_buildings);
         // Not the building paths
-        app.layer.draw_minimap(g);
+        if let Some(ref l) = app.layer {
+            l.draw_minimap(g);
+        }
 
         let mut cache = app.primary.draw_map.agents.borrow_mut();
         cache.draw_unzoomed_agents(
@@ -205,7 +215,11 @@ impl Minimap {
             &app.primary.map,
             &app.agent_cs,
             g,
-            Distance::meters(2.0 + (self.zoom_lvl as f64)) / self.zoom,
+            if app.opts.large_unzoomed_agents {
+                Some(Distance::meters(2.0 + (self.zoom_lvl as f64)) / self.zoom)
+            } else {
+                None
+            },
         );
 
         // The cursor
@@ -246,7 +260,7 @@ impl Minimap {
 }
 
 fn make_minimap_panel(ctx: &mut EventCtx, app: &App, zoom_lvl: usize) -> Composite {
-    if ctx.canvas.cam_zoom < MIN_ZOOM_FOR_DETAIL {
+    if ctx.canvas.cam_zoom < app.opts.min_zoom_for_detail {
         return Composite::new(Widget::row(vec![
             make_tool_panel(ctx, app).align_right().margin_right(16),
             make_vert_viz_panel(ctx, app).bg(app.cs.panel_bg).padding(7),
@@ -332,7 +346,7 @@ fn make_minimap_panel(ctx: &mut EventCtx, app: &App, zoom_lvl: usize) -> Composi
 fn make_tool_panel(ctx: &mut EventCtx, app: &App) -> Widget {
     // TODO Apply something to everything in the column
     Widget::col(vec![
-        (if ctx.canvas.cam_zoom >= MIN_ZOOM_FOR_DETAIL {
+        (if ctx.canvas.cam_zoom >= app.opts.min_zoom_for_detail {
             Btn::svg_def("../data/system/assets/minimap/zoom_out_fully.svg").build(
                 ctx,
                 "zoom out fully",
@@ -355,9 +369,6 @@ fn make_tool_panel(ctx: &mut EventCtx, app: &App) -> Widget {
             .build(ctx, "search", hotkey(Key::K))
             .bg(app.cs.inner_panel)
             .margin_below(16),
-        Btn::svg_def("../data/system/assets/tools/shortcuts.svg")
-            .build(ctx, "shortcuts", hotkey(Key::SingleQuote))
-            .bg(app.cs.inner_panel),
     ])
 }
 

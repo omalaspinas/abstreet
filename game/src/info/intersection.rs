@@ -1,10 +1,12 @@
 use crate::app::App;
 use crate::info::{header_btns, make_tabs, throughput, DataOptions, Details, Tab};
 use abstutil::prettyprint_usize;
-use ezgui::{EventCtx, Line, LinePlot, PlotOptions, Series, Text, Widget};
-use geom::{Duration, Statistic, Time};
+use ezgui::{
+    Color, EventCtx, GeomBatch, Line, PlotOptions, RewriteColor, ScatterPlotV2, Series, Text,
+    Widget,
+};
+use geom::{Angle, ArrowCap, Distance, PolyLine};
 use map_model::{IntersectionID, IntersectionType};
-use sim::Analytics;
 use std::collections::BTreeSet;
 
 pub fn info(ctx: &EventCtx, app: &App, details: &mut Details, id: IntersectionID) -> Vec<Widget> {
@@ -19,6 +21,9 @@ pub fn info(ctx: &EventCtx, app: &App, details: &mut Details, id: IntersectionID
     for r in road_names {
         // TODO The spacing is ignored, so use -
         txt.add(Line(format!("- {}", r)));
+    }
+    if app.opts.dev {
+        txt.add(Line(format!("OSM node ID: {}", i.orig_id.osm_node_id)).secondary());
     }
     rows.push(txt.draw(ctx));
 
@@ -48,9 +53,8 @@ pub fn traffic(
             app.primary
                 .sim
                 .get_analytics()
-                .thruput_stats
-                .count_per_intersection
-                .get(id)
+                .intersection_thruput
+                .total_for(id)
         )
     )));
     rows.push(txt.draw(ctx));
@@ -61,7 +65,7 @@ pub fn traffic(
         throughput(
             ctx,
             app,
-            move |a, t| a.throughput_intersection(t, id, opts.bucket_size),
+            move |a| a.intersection_thruput.count_per_hour(id),
             opts.show_before,
         )
         .margin(10),
@@ -94,49 +98,102 @@ pub fn delay(
     rows
 }
 
-fn delay_plot(ctx: &EventCtx, app: &App, i: IntersectionID, opts: &DataOptions) -> Widget {
-    let get_data = |a: &Analytics, t: Time| {
-        let mut series: Vec<(Statistic, Vec<(Time, Duration)>)> = Statistic::all()
-            .into_iter()
-            .map(|stat| (stat, Vec::new()))
-            .collect();
-        for (t, distrib) in a.intersection_delays_bucketized(t, i, opts.bucket_size) {
-            for (stat, pts) in series.iter_mut() {
-                if distrib.count() == 0 {
-                    pts.push((t, Duration::ZERO));
-                } else {
-                    pts.push((t, distrib.select(*stat)));
-                }
-            }
+pub fn current_demand(
+    ctx: &mut EventCtx,
+    app: &App,
+    details: &mut Details,
+    id: IntersectionID,
+) -> Vec<Widget> {
+    let mut rows = header(ctx, app, details, id, Tab::IntersectionDemand(id));
+
+    let mut total_demand = 0;
+    let mut demand_per_group: Vec<(&PolyLine, usize)> = Vec::new();
+    for g in app.primary.map.get_traffic_signal(id).turn_groups.values() {
+        let demand = app
+            .primary
+            .sim
+            .get_analytics()
+            .demand
+            .get(&g.id)
+            .cloned()
+            .unwrap_or(0);
+        if demand > 0 {
+            total_demand += demand;
+            demand_per_group.push((&g.geom, demand));
         }
-        series
+    }
+
+    let mut batch = GeomBatch::new();
+    let polygon = app.primary.map.get_i(id).polygon.clone();
+    let bounds = polygon.get_bounds();
+    // Pick a zoom so that we fit a fixed width in pixels
+    let zoom = 300.0 / bounds.width();
+    batch.push(app.cs.normal_intersection, polygon);
+
+    let mut txt_batch = GeomBatch::new();
+    for (pl, demand) in demand_per_group {
+        let percent = (demand as f64) / (total_demand as f64);
+        batch.push(
+            Color::RED,
+            pl.make_arrow(percent * Distance::meters(3.0), ArrowCap::Triangle)
+                .unwrap(),
+        );
+        txt_batch.add_transformed(
+            Text::from(Line(prettyprint_usize(demand))).render_ctx(ctx),
+            pl.middle(),
+            0.15 / ctx.get_scale_factor(),
+            Angle::ZERO,
+            RewriteColor::NoOp,
+        );
+    }
+    batch.append(txt_batch);
+    let mut transformed_batch = GeomBatch::new();
+    for (color, poly) in batch.consume() {
+        transformed_batch.fancy_push(
+            color,
+            poly.translate(-bounds.min_x, -bounds.min_y).scale(zoom),
+        );
+    }
+
+    let mut txt = Text::from(Line(format!(
+        "How many active trips will cross this intersection?"
+    )));
+    txt.add(Line(format!("Total: {}", prettyprint_usize(total_demand))).secondary());
+    rows.push(txt.draw(ctx));
+    rows.push(Widget::draw_batch(ctx, transformed_batch));
+
+    rows
+}
+
+// TODO a fan chart might be nicer
+fn delay_plot(ctx: &EventCtx, app: &App, i: IntersectionID, opts: &DataOptions) -> Widget {
+    let series = if opts.show_before {
+        Series {
+            label: "Delay through intersection (before changes)".to_string(),
+            color: Color::BLUE.alpha(0.9),
+            pts: app
+                .prebaked()
+                .intersection_delays
+                .get(&i)
+                .cloned()
+                .unwrap_or_else(Vec::new),
+        }
+    } else {
+        Series {
+            label: "Delay through intersection (after changes)".to_string(),
+            color: Color::RED.alpha(0.9),
+            pts: app
+                .primary
+                .sim
+                .get_analytics()
+                .intersection_delays
+                .get(&i)
+                .cloned()
+                .unwrap_or_else(Vec::new),
+        }
     };
 
-    let mut all_series = Vec::new();
-    for (idx, (stat, pts)) in get_data(app.primary.sim.get_analytics(), app.primary.sim.time())
-        .into_iter()
-        .enumerate()
-    {
-        all_series.push(Series {
-            label: stat.to_string(),
-            color: app.cs.rotating_color_plot(idx),
-            pts,
-        });
-    }
-    if opts.show_before {
-        for (idx, (stat, pts)) in get_data(app.prebaked(), app.primary.sim.get_end_of_day())
-            .into_iter()
-            .enumerate()
-        {
-            all_series.push(Series {
-                label: format!("{} (before changes)", stat),
-                color: app.cs.rotating_color_plot(idx).alpha(0.3),
-                pts,
-            });
-        }
-    }
-
-    LinePlot::new(ctx, "delay", all_series, PlotOptions::new())
+    ScatterPlotV2::new(ctx, series, PlotOptions::new())
 }
 
 fn header(
@@ -170,7 +227,11 @@ fn header(
             ),
         ];
         if i.is_traffic_signal() {
-            tabs.push(("Delay", Tab::IntersectionDelay(id, DataOptions::new(app))));
+            tabs.push((
+                "Delay",
+                Tab::IntersectionDelay(id, DataOptions { show_before: false }),
+            ));
+            tabs.push(("Current demand", Tab::IntersectionDemand(id)));
         }
         tabs
     }));

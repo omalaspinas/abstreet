@@ -1,6 +1,6 @@
 use crate::make::sidewalk_finder::find_sidewalk_points;
 use crate::raw::{OriginalBuilding, RawBuilding};
-use crate::{Building, BuildingID, FrontPath, LaneType, Map, OffstreetParking};
+use crate::{osm, Building, BuildingID, FrontPath, LaneID, LaneType, Map, OffstreetParking};
 use abstutil::Timer;
 use geom::{Distance, HashablePt2D, Line, PolyLine, Polygon};
 use std::collections::{BTreeMap, HashSet};
@@ -51,7 +51,8 @@ pub fn make_all_buildings(
             let mut bldg = Building {
                 id,
                 polygon: b.polygon.clone(),
-                osm_tags: b.osm_tags.clone(),
+                address: get_address(&b.osm_tags, sidewalk_pos.lane(), map),
+                name: b.osm_tags.get(osm::NAME).cloned(),
                 osm_way_id: orig_id.osm_way_id,
                 front_path: FrontPath {
                     sidewalk: *sidewalk_pos,
@@ -62,32 +63,29 @@ pub fn make_all_buildings(
                 label_center: b.polygon.polylabel(),
             };
 
-            // Can this building have a driveway? If it's not next to a driving lane part of the
-            // main connectivity graph, then no.
+            // Can this building have a driveway? If it's not next to a driving lane, then no.
             let sidewalk_lane = sidewalk_pos.lane();
             if let Ok(driving_lane) = map
                 .get_parent(sidewalk_lane)
                 .find_closest_lane(sidewalk_lane, vec![LaneType::Driving])
             {
-                if map.get_l(driving_lane).parking_blackhole.is_none() {
-                    let driving_pos = sidewalk_pos.equiv_pos(driving_lane, Distance::ZERO, map);
+                let driving_pos = sidewalk_pos.equiv_pos(driving_lane, Distance::ZERO, map);
 
-                    let buffer = Distance::meters(7.0);
-                    if driving_pos.dist_along() > buffer
-                        && map.get_l(driving_lane).length() - driving_pos.dist_along() > buffer
-                    {
-                        let driveway_line = PolyLine::new(vec![
-                            sidewalk_line.pt1(),
-                            sidewalk_line.pt2(),
-                            driving_pos.pt(map),
-                        ]);
-                        bldg.parking = Some(OffstreetParking {
-                            public_garage_name: b.public_garage_name.clone(),
-                            num_spots: b.num_parking_spots,
-                            driveway_line,
-                            driving_pos,
-                        });
-                    }
+                let buffer = Distance::meters(7.0);
+                if driving_pos.dist_along() > buffer
+                    && map.get_l(driving_lane).length() - driving_pos.dist_along() > buffer
+                {
+                    let driveway_line = PolyLine::new(vec![
+                        sidewalk_line.pt1(),
+                        sidewalk_line.pt2(),
+                        driving_pos.pt(map),
+                    ]);
+                    bldg.parking = Some(OffstreetParking {
+                        public_garage_name: b.public_garage_name.clone(),
+                        num_spots: b.num_parking_spots,
+                        driveway_line,
+                        driving_pos,
+                    });
                 }
             }
             if bldg.parking.is_none() {
@@ -101,13 +99,10 @@ pub fn make_all_buildings(
         }
     }
 
-    let discarded = input.len() - results.len();
-    if discarded > 0 {
-        timer.note(format!(
-            "Discarded {} buildings that weren't close enough to a sidewalk",
-            discarded
-        ));
-    }
+    timer.note(format!(
+        "Discarded {} buildings that weren't close enough to a sidewalk",
+        input.len() - results.len()
+    ));
     timer.stop("convert buildings");
 
     results
@@ -125,4 +120,12 @@ fn trim_path(poly: &Polygon, path: Line) -> Line {
     }
     // Just give up
     path
+}
+
+fn get_address(tags: &BTreeMap<String, String>, sidewalk: LaneID, map: &Map) -> String {
+    match (tags.get("addr:housenumber"), tags.get("addr:street")) {
+        (Some(num), Some(st)) => format!("{} {}", num, st),
+        (None, Some(st)) => format!("??? {}", st),
+        _ => format!("??? {}", map.get_parent(sidewalk).get_name()),
+    }
 }

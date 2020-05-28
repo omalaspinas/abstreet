@@ -396,3 +396,48 @@ changes here.
 - parking changes: show path to closest free spot, utilization of a lane over time, every building includes at least 1 offstreet spot by default
 - progress on removing unrealistic gridlock: detect turn conflict cycles and temporarily allow conflicts, trim last steps of a laggy head
 - internal sim alert system. speeds up debugging, could be used for player-facing "traffic jam!" alerts
+
+0.1.39
+
+- switched to proper OSM-based maps; no more brittle, manual geometry fixes
+- more sorting and filtering options in trip table and parking overhead tables
+- improve offstreet parking rendering. park closer to destination buildings
+- easier process for importing new cities. introducing Los Angeles, Austin, Barranquilla.
+- new data updater tool so people can opt-in to new cities
+- many internal fixes to prevent gridlock. smarter cycle detection, manual OSM fixes and traffic signal timings
+
+0.1.40
+
+- differential throughput layer to understand routing diversions
+- map edits now reference longer-lasting OSM IDs, can work cross-map
+- basemap updates: new areas for west seattle, mt baker, lots of upstreamed fixes in OSM and traffic signals, smarter border matching
+- parking: optionally filter on/off-street spots in the layer, allow disconnecting spots via edits
+- render some tunnels with lower opacity
+- new feature to change speed limits and bulk road selection tools
+- first write-up of a real use case (closing lake wash through arboretum)
+- make the traffic signal challenge act like a game, with a failure/win state and scoring
+
+0.1.40a
+
+- added a mode to map parking
+
+0.1.41
+
+- new parking mapper tool
+- include a one-shot .osm importer in the release
+- new layer to find different types of amenities / businesses
+- adjust traffic signal rendering style
+- bulk lane editor for changing speed limits and lane types
+- including west seattle and udistrict maps
+- include some OSM buildings that were being skipped
+- dont pause after opening something from sandbox mode
+- adjust turn signals for lane-changing cars
+- lots of fixes for monitors with different DPIs, enabled by default
+
+0.1.42
+
+- many misc UI bugfixes, especially for high-DPI screens
+- managing turns across multiple nearby intersections: tool to visualize, handling multi-way OSM turn restrictions, using this to ban illegal movements at the pathfinding layer, starting a traffic signal editor variant to edit these
+- rendering improvements: unzoomed agent size, visualizing routes on trip table, transparent roads beneath bridges, draw harbor island
+- overhauled street/address finder
+- parking mapper: shortcut to open bing

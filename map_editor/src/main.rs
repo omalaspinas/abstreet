@@ -1,5 +1,4 @@
 mod model;
-mod upstream;
 mod world;
 
 use abstutil::{CmdArgs, Timer};
@@ -57,17 +56,10 @@ impl UI {
         let load = args.optional_free();
         let include_bldgs = args.enabled("--bldgs");
         let intersection_geom = args.enabled("--geom");
-        let no_fixes = args.enabled("--nofixes");
         args.done();
 
         let model = if let Some(path) = load {
-            Model::import(
-                path,
-                include_bldgs,
-                intersection_geom,
-                no_fixes,
-                ctx.prerender,
-            )
+            Model::import(path, include_bldgs, intersection_geom, ctx.prerender)
         } else {
             Model::blank()
         };
@@ -76,7 +68,7 @@ impl UI {
         }
         let bounds = model.map.gps_bounds.to_bounds();
         ctx.canvas.map_dims = (bounds.width(), bounds.height());
-        let mut ui = UI {
+        UI {
             model,
             state: State::viewing(),
             composite: Composite::new(
@@ -87,9 +79,7 @@ impl UI {
                         vec![
                             (hotkey(Key::Escape), "quit"),
                             (None, "save raw map"),
-                            (hotkey(Key::F), "save map fixes"),
                             (hotkey(Key::J), "warp to something"),
-                            (None, "produce OSM parking+sidewalk diff"),
                             (hotkey(Key::G), "preview all intersections"),
                             (None, "find overlapping intersections"),
                             (hotkey(Key::Z), "find/clear short roads"),
@@ -108,33 +98,7 @@ impl UI {
             info_key_held: false,
 
             last_id: None,
-        };
-        ui.recount_parking_tags(ctx);
-        ui
-    }
-
-    fn recount_parking_tags(&mut self, ctx: &mut EventCtx) {
-        let mut ways_audited = HashSet::new();
-        let mut ways_missing = HashSet::new();
-        for r in self.model.map.roads.values() {
-            if r.synthetic() {
-                continue;
-            }
-            if r.osm_tags.contains_key(osm::INFERRED_PARKING) {
-                ways_missing.insert(r.osm_tags[osm::OSM_WAY_ID].clone());
-            } else {
-                ways_audited.insert(r.osm_tags[osm::OSM_WAY_ID].clone());
-            }
         }
-
-        let mut txt = Text::from(Line(format!(
-            "Parking data audited: {} / {} ways",
-            abstutil::prettyprint_usize(ways_audited.len()),
-            abstutil::prettyprint_usize(ways_audited.len() + ways_missing.len())
-        )));
-        txt.add(Line("Hold right Control to show info about objects"));
-        self.composite
-            .replace(ctx, "current info", txt.draw(ctx).named("current info"));
     }
 }
 
@@ -231,13 +195,6 @@ impl GUI for UI {
                         } else if could_swap && ctx.input.key_pressed(Key::S, "swap lanes") {
                             self.model.swap_lanes(r, ctx.prerender);
                             self.model.world.handle_mouseover(ctx);
-                        } else if ctx.input.key_pressed(Key::M, "merge road") {
-                            self.model.merge_r(r, ctx.prerender);
-                            self.model.world.handle_mouseover(ctx);
-                        } else if ctx.input.key_pressed(Key::T, "toggle parking") {
-                            self.model.toggle_r_parking(r, ctx.prerender);
-                            self.model.world.handle_mouseover(ctx);
-                            self.recount_parking_tags(ctx);
                         } else if ctx.input.key_pressed(Key::F, "toggle sidewalks") {
                             self.model.toggle_r_sidewalks(r, ctx.prerender);
                             self.model.world.handle_mouseover(ctx);
@@ -310,14 +267,8 @@ impl GUI for UI {
                                         self.state = State::SavingModel(Wizard::new());
                                     }
                                 }
-                                "save map fixes" => {
-                                    self.model.save_fixes();
-                                }
                                 "warp to something" => {
                                     self.state = State::EnteringWarp(Wizard::new());
-                                }
-                                "produce OSM parking+sidewalk diff" => {
-                                    upstream::find_diffs(&self.model.map);
                                 }
                                 "preview all intersections" => {
                                     if !self.model.intersection_geom {

@@ -1,6 +1,6 @@
 use crate::app::App;
 use crate::info::{header_btns, make_table, make_tabs, Details, Tab};
-use crate::render::{dashed_lines, DrawPedestrian};
+use crate::render::DrawPedestrian;
 use ezgui::{Btn, Color, EventCtx, Line, Text, TextExt, Widget};
 use geom::{Angle, Circle, Distance, Speed, Time};
 use map_model::{BuildingID, LaneID, Traversable, SIDEWALK_THICKNESS};
@@ -13,9 +13,9 @@ pub fn info(ctx: &mut EventCtx, app: &App, details: &mut Details, id: BuildingID
 
     let mut kv = Vec::new();
 
-    kv.push(("Address", b.just_address(&app.primary.map)));
-    if let Some(name) = b.just_name() {
-        kv.push(("Name", name.to_string()));
+    kv.push(("Address", b.address.clone()));
+    if let Some(ref name) = b.name {
+        kv.push(("Name", name.clone()));
     }
 
     if let Some(ref p) = b.parking {
@@ -43,33 +43,36 @@ pub fn info(ctx: &mut EventCtx, app: &App, details: &mut Details, id: BuildingID
     let mut txt = Text::new();
 
     if !b.amenities.is_empty() {
+        txt.add(Line(""));
         if b.amenities.len() > 1 {
             txt.add(Line(format!("{} amenities:", b.amenities.len())));
         }
         for (name, amenity) in &b.amenities {
-            txt.add(Line(format!("- {} (a {})", name, amenity)));
+            txt.add(Line(format!("- {} ({})", name, amenity)));
         }
     }
 
+    txt.add(Line(""));
     if let Some(pl) = app
         .primary
         .sim
         .walking_path_to_nearest_parking_spot(&app.primary.map, id)
         .and_then(|(path, start_dist)| path.trace(&app.primary.map, start_dist, None))
     {
-        txt.add(Line(format!(
-            "Closest parking is ~{} by foot",
+        let color = app.cs.parking_trip;
+        // TODO But this color doesn't show up well against the info panel...
+        txt.add(Line("Nearest parking").fg(color));
+        txt.append(Line(format!(
+            " is ~{} away by foot",
             pl.length() / Speed::miles_per_hour(3.0)
         )));
 
-        let color = app.cs.unzoomed_pedestrian;
         details
             .unzoomed
             .push(color, pl.make_polygons(Distance::meters(10.0)));
         details.zoomed.extend(
             color,
-            dashed_lines(
-                &pl,
+            pl.dashed_lines(
                 Distance::meters(0.75),
                 Distance::meters(1.0),
                 Distance::meters(0.4),
@@ -82,23 +85,6 @@ pub fn info(ctx: &mut EventCtx, app: &App, details: &mut Details, id: BuildingID
     if !txt.is_empty() {
         rows.push(txt.draw(ctx))
     }
-
-    rows
-}
-
-pub fn debug(ctx: &mut EventCtx, app: &App, details: &mut Details, id: BuildingID) -> Vec<Widget> {
-    let mut rows = header(ctx, app, details, id, Tab::BldgDebug(id));
-    let b = app.primary.map.get_b(id);
-
-    rows.extend(make_table(
-        ctx,
-        vec![(
-            "Dist along sidewalk",
-            b.front_path.sidewalk.dist_along().to_string(),
-        )],
-    ));
-    rows.push("Raw OpenStreetMap data".draw_text(ctx));
-    rows.extend(make_table(ctx, b.osm_tags.clone().into_iter().collect()));
 
     rows
 }
@@ -181,11 +167,7 @@ fn header(
         ctx,
         &mut details.hyperlinks,
         tab,
-        vec![
-            ("Info", Tab::BldgInfo(id)),
-            ("Debug", Tab::BldgDebug(id)),
-            ("People", Tab::BldgPeople(id)),
-        ],
+        vec![("Info", Tab::BldgInfo(id)), ("People", Tab::BldgPeople(id))],
     ));
 
     draw_occupants(details, app, id, None);

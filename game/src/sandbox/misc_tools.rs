@@ -1,12 +1,12 @@
 use crate::app::{App, ShowEverything};
 use crate::common::ColorLegend;
 use crate::game::{DrawBaselayer, State, Transition};
-use crate::render::{dashed_lines, draw_signal_phase, make_signal_diagram, DrawOptions, DrawTurn};
+use crate::render::{draw_signal_phase, make_signal_diagram, DrawOptions, BIG_ARROW_THICKNESS};
 use ezgui::{
     hotkey, Btn, Color, Composite, Drawable, EventCtx, GeomBatch, GfxCtx, HorizontalAlignment, Key,
     Line, Outcome, Text, VerticalAlignment, Widget,
 };
-use geom::{Distance, Polygon, Time};
+use geom::{ArrowCap, Distance, Polygon, Time};
 use map_model::{IntersectionID, LaneID, TurnType};
 use sim::{AgentID, DontDrawAgents};
 
@@ -39,8 +39,7 @@ impl RoutePreview {
                     let mut batch = GeomBatch::new();
                     batch.extend(
                         app.cs.route,
-                        dashed_lines(
-                            &trace,
+                        trace.dashed_lines(
                             Distance::meters(0.75),
                             Distance::meters(1.0),
                             Distance::meters(0.4),
@@ -174,16 +173,12 @@ impl State for TurnExplorer {
                     return Transition::Pop;
                 }
                 "previous turn" => {
-                    if self.idx != 0 {
-                        self.idx -= 1;
-                        self.composite = TurnExplorer::make_panel(ctx, app, self.l, self.idx);
-                    }
+                    self.idx -= 1;
+                    self.composite = TurnExplorer::make_panel(ctx, app, self.l, self.idx);
                 }
                 "next turn" => {
-                    if self.idx != app.primary.map.get_turns_from_lane(self.l).len() {
-                        self.idx += 1;
-                        self.composite = TurnExplorer::make_panel(ctx, app, self.l, self.idx);
-                    }
+                    self.idx += 1;
+                    self.composite = TurnExplorer::make_panel(ctx, app, self.l, self.idx);
                 }
                 _ => unreachable!(),
             },
@@ -208,7 +203,13 @@ impl State for TurnExplorer {
 
         if self.idx == 0 {
             for turn in &app.primary.map.get_turns_from_lane(self.l) {
-                DrawTurn::draw_full(turn, g, color_turn_type(turn.turn_type).alpha(0.5));
+                g.draw_polygon(
+                    color_turn_type(turn.turn_type).alpha(0.5),
+                    &turn
+                        .geom
+                        .make_arrow(BIG_ARROW_THICKNESS, ArrowCap::Triangle)
+                        .unwrap(),
+                );
             }
         } else {
             let current = &app.primary.map.get_turns_from_lane(self.l)[self.idx - 1];
@@ -216,12 +217,25 @@ impl State for TurnExplorer {
             let mut batch = GeomBatch::new();
             for t in app.primary.map.get_turns_in_intersection(current.id.parent) {
                 if current.conflicts_with(t) {
-                    DrawTurn::draw_dashed(t, &mut batch, CONFLICTING_TURN);
+                    batch.extend(
+                        CONFLICTING_TURN,
+                        t.geom.dashed_arrow(
+                            BIG_ARROW_THICKNESS,
+                            Distance::meters(1.0),
+                            Distance::meters(0.5),
+                            ArrowCap::Triangle,
+                        ),
+                    );
                 }
             }
+            batch.push(
+                CURRENT_TURN,
+                current
+                    .geom
+                    .make_arrow(BIG_ARROW_THICKNESS, ArrowCap::Triangle)
+                    .unwrap(),
+            );
             batch.draw(g);
-
-            DrawTurn::draw_full(current, g, CURRENT_TURN);
         }
 
         self.composite.draw(g);

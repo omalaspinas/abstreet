@@ -9,7 +9,7 @@ use crate::{
 use abstutil::{deserialize_btreemap, serialize_btreemap};
 use geom::{Distance, Duration, PolyLine, Time};
 use map_model::{LaneID, Map, Path, PathStep, Traversable};
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
 const TIME_TO_UNPARK: Duration = Duration::const_seconds(10.0);
@@ -340,10 +340,7 @@ impl DrivingSimState {
                         now,
                         map,
                         scheduler,
-                        Some((
-                            self.queues.get_mut(&Traversable::Lane(t.dst)).unwrap(),
-                            &car,
-                        )),
+                        Some((&car, &self.cars, &mut self.queues)),
                     ) {
                         // Don't schedule a retry here.
                         return false;
@@ -614,6 +611,8 @@ impl DrivingSimState {
             };
             intersections.space_freed(now, i, scheduler, map);
         }
+
+        intersections.vehicle_gone(car.vehicle.id);
 
         // We might be vanishing while partly clipping into other stuff.
         self.trim_last_steps(
@@ -941,6 +940,12 @@ impl DrivingSimState {
     pub fn get_path(&self, id: CarID) -> Option<&Path> {
         let car = self.cars.get(&id)?;
         Some(car.router.get_path())
+    }
+    pub fn get_all_driving_paths(&self) -> Vec<&Path> {
+        self.cars
+            .values()
+            .map(|car| car.router.get_path())
+            .collect()
     }
 
     pub fn trace_route(

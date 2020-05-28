@@ -25,8 +25,10 @@ rm -f play_abstreet.sh
 cp ~/abstreet/release/play_abstreet.bat .
 cd game
 rm -f game
-unzip ~/Downloads/game_exe.zip
-rm -f ~/Downloads/game_exe.zip
+unzip ~/Downloads/windows_exe.zip
+rm -f ~/Downloads/windows_exe.zip
+rm -f ../importer/importer
+mv importer.exe ../importer
 cd ../..
 
 zip -r abstreet_linux_$VERSION abstreet_linux_$VERSION

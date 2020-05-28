@@ -85,10 +85,9 @@ pub struct ColorScheme {
     pub map_background: Color,
     pub unzoomed_interesting_intersection: Color,
     pub building: Color,
+    pub building_outline: Color,
     pub grass: Color,
     pub water: Color,
-    pub bus_stop: Color,
-    pub extra_gis_shape: Color,
 
     // Unzoomed dynamic elements
     pub unzoomed_car: Color,
@@ -186,10 +185,9 @@ impl ColorScheme {
             map_background: Color::grey(0.87),
             unzoomed_interesting_intersection: Color::BLACK,
             building: Color::rgb(196, 193, 188),
+            building_outline: Color::hex("#938E85"),
             grass: hex("#94C84A"),
             water: Color::rgb(164, 200, 234),
-            bus_stop: Color::CYAN,
-            extra_gis_shape: Color::RED.alpha(0.5),
 
             // Unzoomed dynamic elements
             unzoomed_car: hex("#A32015"),
@@ -214,7 +212,7 @@ impl ColorScheme {
             ped_foot: Color::BLACK,
             ped_preparing_bike_body: Color::rgb(255, 0, 144),
             ped_crowd: Color::rgb_f(0.2, 0.7, 0.7),
-            bike_frame: Color::rgb(0, 128, 128),
+            bike_frame: Color::hex("#AAA9AD"),
 
             // Layers
             good_to_bad: [

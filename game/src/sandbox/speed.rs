@@ -8,7 +8,7 @@ use ezgui::{
     HorizontalAlignment, Key, Line, Outcome, PersistentSplit, RewriteColor, Slider, Text,
     VerticalAlignment, Widget,
 };
-use geom::{Duration, PolyLine, Polygon, Pt2D, Time};
+use geom::{Duration, Polygon, Pt2D, Time};
 use instant::Instant;
 use sim::AlertLocation;
 
@@ -165,7 +165,6 @@ impl SpeedControls {
                 }
                 "reset to midnight" => {
                     if let Some(mode) = maybe_mode {
-                        app.primary.clear_sim();
                         return Some(Transition::Replace(Box::new(SandboxMode::new(
                             ctx,
                             app,
@@ -190,7 +189,7 @@ impl SpeedControls {
                     if dt == Duration::seconds(0.1) {
                         app.primary.sim.normal_step(&app.primary.map, dt);
                         app.recalculate_current_selection(ctx);
-                        return None;
+                        return Some(Transition::KeepWithMouseover);
                     }
                     return Some(Transition::Push(TimeWarpScreen::new(
                         ctx,
@@ -258,7 +257,7 @@ impl SpeedControls {
                     SpeedSetting::Fastest => 3600.0,
                 };
                 let dt = multiplier * real_dt;
-                // TODO This should match the update frequency in ezgapp. Plumb along the deadline
+                // TODO This should match the update frequency in ezgui. Plumb along the deadline
                 // or frequency to here.
                 app.primary
                     .sim
@@ -278,7 +277,10 @@ impl SpeedControls {
                 AlertLocation::Person(_) => None,
                 AlertLocation::Building(b) => Some(ID::Building(b)),
             };
-            // TODO Can filter for alerts at particular places like this:
+            // TODO Can filter for particular alerts places like this:
+            /*if !alerts[0].2.contains("Turn conflict cycle") {
+                return None;
+            }*/
             /*if maybe_id != Some(ID::Building(map_model::BuildingID(91))) {
                 return None;
             }*/
@@ -402,7 +404,6 @@ impl State for JumpToTime {
                     let traffic_jams = self.composite.is_checked("Stop when there's a traffic jam");
                     if self.target < app.primary.sim.time() {
                         if let Some(mode) = self.maybe_mode.take() {
-                            app.primary.clear_sim();
                             return Transition::ReplaceThenPush(
                                 Box::new(SandboxMode::new(ctx, app, mode)),
                                 TimeWarpScreen::new(ctx, app, self.target, traffic_jams),
@@ -510,7 +511,9 @@ impl State for TimeWarpScreen {
                 Duration::seconds(0.033),
             ) {
                 let id = ID::Intersection(problems[0].0);
-                app.layer = crate::layer::traffic::traffic_jams(ctx, app);
+                app.layer = Some(Box::new(crate::layer::traffic::Dynamic::traffic_jams(
+                    ctx, app,
+                )));
                 return Transition::Replace(Warping::new(
                     ctx,
                     id.canonical_point(&app.primary).unwrap(),
@@ -667,14 +670,15 @@ fn area_under_curve(raw: Vec<(Time, usize)>, width: f64, height: f64) -> Polygon
 
     let mut pts = Vec::new();
     for (t, cnt) in raw {
-        pts.push(Pt2D::new(
-            (t - min_x) / (max_x - min_x) * width,
-            ((cnt - min_y) as f64) / ((max_y - min_y) as f64) * height,
+        pts.push(lttb::DataPoint::new(
+            width * (t - min_x) / (max_x - min_x),
+            height * (1.0 - (((cnt - min_y) as f64) / ((max_y - min_y) as f64))),
         ));
     }
-
-    // TODO The smoothing should be tuned more
-    let mut final_pts = PolyLine::new_simplified(pts, 5.0).into_points();
-    final_pts.push(final_pts[0]);
-    Polygon::new(&final_pts)
+    let mut downsampled = Vec::new();
+    for pt in lttb::lttb(pts, 100) {
+        downsampled.push(Pt2D::new(pt.x, pt.y));
+    }
+    downsampled.push(downsampled[0]);
+    Polygon::new(&downsampled)
 }

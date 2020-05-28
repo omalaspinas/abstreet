@@ -17,7 +17,7 @@ pub struct Button {
     // Screenspace, top-left always at the origin. Also, probably not a box. :P
     hitbox: Polygon,
 
-    hovering: bool,
+    pub(crate) hovering: bool,
 
     pub(crate) top_left: ScreenPt,
     pub(crate) dims: ScreenDims,
@@ -140,9 +140,6 @@ impl Btn {
     pub fn text_fg<I: Into<String>>(label: I) -> BtnBuilder {
         let label = label.into();
         BtnBuilder::TextFG(label.clone(), Text::from(Line(label)), None)
-    }
-    pub fn custom_text_fg(normal: Text) -> BtnBuilder {
-        BtnBuilder::TextFG(String::new(), normal, None)
     }
 
     pub fn text_bg<I: Into<String>>(
@@ -280,7 +277,11 @@ impl BtnBuilder {
                 maybe_tooltip,
                 pad,
             } => {
-                let (orig, bounds) = svg::load_svg(ctx.prerender, &path);
+                let (orig, bounds) = svg::load_svg(
+                    ctx.prerender,
+                    &path,
+                    *ctx.prerender.assets.scale_factor.borrow(),
+                );
                 let pad = pad as f64;
                 let geom =
                     Polygon::rectangle(bounds.width() + 2.0 * pad, bounds.height() + 2.0 * pad);
@@ -401,12 +402,12 @@ impl BtnBuilder {
             }
             BtnBuilder::Custom(normal, hovered, hitbox, maybe_t) => Button::new(
                 ctx,
-                normal,
-                hovered,
+                normal.scale(ctx.get_scale_factor()),
+                hovered.scale(ctx.get_scale_factor()),
                 key,
                 &action_tooltip.into(),
                 maybe_t,
-                hitbox,
+                hitbox.scale(ctx.get_scale_factor()),
             ),
         }
     }
@@ -429,7 +430,7 @@ impl BtnBuilder {
     pub fn inactive(mut self, ctx: &EventCtx) -> Widget {
         match self {
             BtnBuilder::TextFG(_, txt, _) => {
-                let btn = Btn::custom_text_fg(txt.change_fg(Color::grey(0.5)))
+                let btn = BtnBuilder::TextFG(String::new(), txt.change_fg(Color::grey(0.5)), None)
                     .build(ctx, "dummy", None)
                     .take_btn();
                 Widget::new(Box::new(JustDraw {

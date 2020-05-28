@@ -3,7 +3,6 @@ mod heatmap;
 mod minimap;
 mod navigate;
 mod panels;
-mod shortcuts;
 mod warp;
 
 pub use self::colors::{ColorLegend, Colorer};
@@ -93,7 +92,7 @@ impl CommonState {
 
     pub fn draw(&self, g: &mut GfxCtx, app: &App) {
         let keys = if let Some(ref info) = self.info_panel {
-            info.draw(g);
+            info.draw(g, app);
             info.active_keys()
         } else {
             &self.cached_actions
@@ -138,7 +137,7 @@ impl CommonState {
                     osd.append(Line(" is "));
                 }
                 let bldg = map.get_b(b);
-                osd.append(Line(bldg.get_name(map)).fg(name_color));
+                osd.append(Line(&bldg.address).fg(name_color));
             }
             ID::Turn(t) => {
                 // Only selectable in dev mode anyway
@@ -205,10 +204,6 @@ impl CommonState {
                     .map(|r| r.name.clone())
                     .collect();
                 list_names(&mut osd, |l| l.fg(name_color), routes);
-            }
-            ID::ExtraShape(es) => {
-                // Only selectable in dev mode anyway
-                osd.append(Line(es.to_string()).fg(id_color));
             }
             ID::Area(a) => {
                 // Only selectable in dev mode anyway

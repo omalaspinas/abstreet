@@ -6,8 +6,8 @@ use ezgui::{
     hotkey, Btn, Color, Composite, EventCtx, GeomBatch, HorizontalAlignment, Key, Line, Prerender,
     RewriteColor, Text, TextExt, VerticalAlignment, Widget,
 };
-use geom::{Angle, Circle, Distance, Duration, Line, PolyLine, Polygon, Pt2D};
-use map_model::{IntersectionID, Phase, TurnPriority};
+use geom::{Angle, ArrowCap, Circle, Distance, Duration, Line, PolyLine, Polygon, Pt2D};
+use map_model::{IntersectionID, Phase, TurnPriority, SIDEWALK_THICKNESS};
 use std::collections::BTreeSet;
 
 // Only draws a box when time_left is present
@@ -27,6 +27,110 @@ pub fn draw_signal_phase(
     let signal = app.primary.map.get_traffic_signal(i);
 
     match signal_style {
+        TrafficSignalStyle::BAP => {
+            let mut dont_walk = BTreeSet::new();
+            let mut crossed_roads = BTreeSet::new();
+            for g in signal.turn_groups.keys() {
+                if g.crosswalk {
+                    dont_walk.insert(g);
+                    // TODO This is incorrect; some crosswalks hop over intermediate roads. How do
+                    // we detect or plumb that?
+                    crossed_roads.insert((g.from.id, g.parent));
+                    crossed_roads.insert((g.to.id, g.parent));
+                }
+            }
+
+            let (yellow_light, percent) = if let Some(t) = time_left {
+                (t <= Duration::seconds(5.0), (t / phase.duration) as f32)
+            } else {
+                (false, 1.0)
+            };
+            let yellow = Color::YELLOW;
+            for g in &phase.protected_groups {
+                if !g.crosswalk {
+                    let slice_start = if crossed_roads.contains(&(g.from.id, g.parent)) {
+                        SIDEWALK_THICKNESS
+                    } else {
+                        Distance::ZERO
+                    };
+                    let slice_end = if crossed_roads.contains(&(g.to.id, g.parent)) {
+                        SIDEWALK_THICKNESS
+                    } else {
+                        Distance::ZERO
+                    };
+
+                    let pl = &signal.turn_groups[g].geom;
+                    batch.push(
+                        if yellow_light {
+                            yellow
+                        } else {
+                            protected_color.alpha(percent)
+                        },
+                        pl.exact_slice(slice_start, pl.length() - slice_end)
+                            .make_arrow(BIG_ARROW_THICKNESS, ArrowCap::Triangle)
+                            .unwrap(),
+                    );
+                } else {
+                    let (center, angle) = crosswalk_icon(&signal.turn_groups[g].geom);
+                    batch.add_svg(
+                        prerender,
+                        "../data/system/assets/map/walk.svg",
+                        center,
+                        0.07,
+                        angle,
+                        RewriteColor::ChangeAlpha(percent),
+                        true,
+                    );
+                    dont_walk.remove(g);
+                }
+            }
+            for g in dont_walk {
+                let (center, angle) = crosswalk_icon(&signal.turn_groups[g].geom);
+                batch.add_svg(
+                    prerender,
+                    "../data/system/assets/map/dont_walk.svg",
+                    center,
+                    0.07,
+                    angle,
+                    RewriteColor::NoOp,
+                    true,
+                );
+            }
+            for g in &phase.yield_groups {
+                assert!(!g.crosswalk);
+                let pl = &signal.turn_groups[g].geom;
+                batch.extend(
+                    Color::BLACK,
+                    pl.exact_slice(
+                        SIDEWALK_THICKNESS - Distance::meters(0.1),
+                        pl.length() - SIDEWALK_THICKNESS + Distance::meters(0.1),
+                    )
+                    .dashed_arrow(
+                        BIG_ARROW_THICKNESS,
+                        Distance::meters(1.2),
+                        Distance::meters(0.3),
+                        ArrowCap::Triangle,
+                    ),
+                );
+                batch.extend(
+                    if yellow_light {
+                        yellow
+                    } else {
+                        protected_color.alpha(percent)
+                    },
+                    pl.exact_slice(SIDEWALK_THICKNESS, pl.length() - SIDEWALK_THICKNESS)
+                        .dashed_arrow(
+                            BIG_ARROW_THICKNESS / 2.0,
+                            Distance::meters(1.0),
+                            Distance::meters(0.5),
+                            ArrowCap::Triangle,
+                        ),
+                );
+            }
+
+            // No time_left box
+            return;
+        }
         TrafficSignalStyle::GroupArrows => {
             for g in &phase.yield_groups {
                 assert!(!g.crosswalk);
@@ -34,7 +138,7 @@ pub fn draw_signal_phase(
                     yield_bg_color,
                     signal.turn_groups[g]
                         .geom
-                        .make_arrow(BIG_ARROW_THICKNESS * 2.0)
+                        .make_arrow(BIG_ARROW_THICKNESS * 2.0, ArrowCap::Triangle)
                         .unwrap(),
                 );
                 batch.extend(
@@ -57,7 +161,7 @@ pub fn draw_signal_phase(
                         protected_color,
                         signal.turn_groups[g]
                             .geom
-                            .make_arrow(BIG_ARROW_THICKNESS * 2.0)
+                            .make_arrow(BIG_ARROW_THICKNESS * 2.0, ArrowCap::Triangle)
                             .unwrap(),
                     );
                 } else {
@@ -69,6 +173,7 @@ pub fn draw_signal_phase(
                         0.07,
                         angle,
                         RewriteColor::NoOp,
+                        true,
                     );
                     dont_walk.remove(g);
                 }
@@ -82,6 +187,7 @@ pub fn draw_signal_phase(
                     0.07,
                     angle,
                     RewriteColor::NoOp,
+                    true,
                 );
             }
         }
@@ -92,7 +198,7 @@ pub fn draw_signal_phase(
                     yield_bg_color,
                     signal.turn_groups[g]
                         .geom
-                        .make_arrow(BIG_ARROW_THICKNESS * 2.0)
+                        .make_arrow(BIG_ARROW_THICKNESS * 2.0, ArrowCap::Triangle)
                         .unwrap(),
                 );
                 batch.extend(
@@ -116,7 +222,7 @@ pub fn draw_signal_phase(
                         protected_color,
                         signal.turn_groups[g]
                             .geom
-                            .make_arrow(BIG_ARROW_THICKNESS * 2.0)
+                            .make_arrow(BIG_ARROW_THICKNESS * 2.0, ArrowCap::Triangle)
                             .unwrap(),
                     );
                 }
@@ -142,7 +248,9 @@ pub fn draw_signal_phase(
                     TurnPriority::Protected => {
                         batch.push(
                             protected_color,
-                            turn.geom.make_arrow(BIG_ARROW_THICKNESS * 2.0).unwrap(),
+                            turn.geom
+                                .make_arrow(BIG_ARROW_THICKNESS * 2.0, ArrowCap::Triangle)
+                                .unwrap(),
                         );
                     }
                     TurnPriority::Yield => {
@@ -249,78 +357,127 @@ pub fn make_signal_diagram(
                 ctx,
                 GeomBatch::from(vec![(
                     Color::WHITE,
-                    Polygon::rectangle(0.2 * ctx.canvas.window_width, 2.0),
+                    Polygon::rectangle(0.2 * ctx.canvas.window_width / ctx.get_scale_factor(), 2.0),
                 )]),
             )
             .margin(15)
             .centered_horiz(),
         );
 
-        let mut phase_rows = Vec::new();
-
-        if edit_mode {
-            phase_rows.push(
-                Widget::row(vec![
-                    format!("Phase {}: {}", idx + 1, phase.duration).draw_text(ctx),
-                    Btn::svg_def("../data/system/assets/tools/edit.svg")
-                        .build(
-                            ctx,
-                            format!("edit phase {}", idx + 1),
-                            if selected == idx {
-                                hotkey(Key::X)
-                            } else {
-                                None
-                            },
-                        )
-                        .align_right(),
-                ])
-                .margin(5)
-                .centered(),
+        let phase_btn = {
+            let mut orig_batch = GeomBatch::new();
+            draw_signal_phase(
+                ctx.prerender,
+                phase,
+                i,
+                None,
+                &mut orig_batch,
+                app,
+                TrafficSignalStyle::Sidewalks,
             );
-        } else {
-            phase_rows.push(format!("Phase {}: {}", idx + 1, phase.duration).draw_text(ctx));
-        }
 
-        let mut orig_batch = GeomBatch::new();
-        draw_signal_phase(
-            ctx.prerender,
-            phase,
-            i,
-            None,
-            &mut orig_batch,
-            app,
-            TrafficSignalStyle::Sidewalks,
-        );
+            let mut normal = GeomBatch::new();
+            normal.push(Color::BLACK, bbox.clone());
+            // Move to the origin and apply zoom
+            for (color, poly) in orig_batch.consume() {
+                normal.fancy_push(
+                    color,
+                    poly.translate(-bounds.min_x, -bounds.min_y).scale(zoom),
+                );
+            }
 
-        let mut normal = GeomBatch::new();
-        normal.push(Color::BLACK, bbox.clone());
-        // Move to the origin and apply zoom
-        for (color, poly) in orig_batch.consume() {
-            normal.fancy_push(
-                color,
-                poly.translate(-bounds.min_x, -bounds.min_y).scale(zoom),
-            );
-        }
+            let mut hovered = GeomBatch::new();
+            hovered.append(normal.clone());
+            hovered.push(Color::RED, bbox.to_outline(Distance::meters(5.0)));
 
-        let mut hovered = GeomBatch::new();
-        hovered.append(normal.clone());
-        hovered.push(Color::RED, bbox.to_outline(Distance::meters(5.0)));
-
-        phase_rows.push(
             Btn::custom(normal, hovered, bbox.clone())
                 .build(ctx, format!("phase {}", idx + 1), None)
-                .margin(5),
-        );
+                .margin(5)
+        };
+
+        let phase_col = if edit_mode {
+            Widget::row(vec![
+                Widget::col(vec![
+                    format!("Phase {}: {}", idx + 1, phase.duration).draw_text(ctx),
+                    phase_btn,
+                ]),
+                Widget::row(vec![
+                    Widget::col(vec![
+                        if idx == 0 {
+                            Btn::text_fg("↑").inactive(ctx)
+                        } else {
+                            Btn::text_fg("↑").build(ctx, format!("move up phase {}", idx + 1), None)
+                        },
+                        if idx == signal.phases.len() - 1 {
+                            Btn::text_fg("↓").inactive(ctx)
+                        } else {
+                            Btn::text_fg("↓").build(
+                                ctx,
+                                format!("move down phase {}", idx + 1),
+                                None,
+                            )
+                        },
+                    ])
+                    .margin_right(15),
+                    Widget::col(vec![
+                        Btn::svg_def("../data/system/assets/tools/edit.svg")
+                            .build(
+                                ctx,
+                                format!("change duration of phase {}", idx + 1),
+                                if selected == idx {
+                                    hotkey(Key::X)
+                                } else {
+                                    None
+                                },
+                            )
+                            .margin_below(10),
+                        if signal.phases.len() > 1 {
+                            Btn::svg_def("../data/system/assets/tools/delete.svg").build(
+                                ctx,
+                                format!("delete phase {}", idx + 1),
+                                None,
+                            )
+                        } else {
+                            Widget::nothing()
+                        },
+                    ]),
+                ])
+                .align_right(),
+            ])
+        } else {
+            Widget::col(vec![
+                format!("Phase {}: {}", idx + 1, phase.duration).draw_text(ctx),
+                phase_btn,
+            ])
+        }
+        .padding(10);
 
         if idx == selected {
-            col.push(Widget::col(phase_rows).bg(Color::hex("#2A2A2A")));
+            col.push(phase_col.bg(Color::hex("#2A2A2A")));
         } else {
-            col.extend(phase_rows);
+            col.push(phase_col);
         }
     }
 
-    Composite::new(Widget::col(col).bg(app.cs.panel_bg))
+    if edit_mode {
+        // Separator
+        col.push(
+            Widget::draw_batch(
+                ctx,
+                GeomBatch::from(vec![(
+                    Color::WHITE,
+                    Polygon::rectangle(0.2 * ctx.canvas.window_width / ctx.get_scale_factor(), 2.0),
+                )]),
+            )
+            .margin(15)
+            .centered_horiz(),
+        );
+
+        col.push(Btn::text_fg("Add new phase").build_def(ctx, None));
+    }
+
+    Composite::new(Widget::col(col).bg(app.cs.panel_bg).padding(10))
         .aligned(HorizontalAlignment::Left, VerticalAlignment::Top)
-        .max_size_percent(30, 85)
+        .exact_size_percent(30, 85)
         .build(ctx)
 }

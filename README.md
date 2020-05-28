@@ -5,9 +5,9 @@ road instead of a bus lane? A/B Street is a game exploring how small changes to
 a city affect the movement of drivers, cyclists, transit users, and pedestrians.
 
 - Play on
-  [Windows](https://github.com/dabreegster/abstreet/releases/download/v0.1.38/abstreet_windows_v0_1_38.zip),
-  [Mac](https://github.com/dabreegster/abstreet/releases/download/v0.1.38/abstreet_mac_v0_1_38.zip),
-  [Linux](https://github.com/dabreegster/abstreet/releases/download/v0.1.38/abstreet_linux_v0_1_38.zip),
+  [Windows](https://github.com/dabreegster/abstreet/releases/download/v0.1.42/abstreet_windows_v0_1_42.zip),
+  [Mac](https://github.com/dabreegster/abstreet/releases/download/v0.1.42/abstreet_mac_v0_1_42.zip),
+  [Linux](https://github.com/dabreegster/abstreet/releases/download/v0.1.42/abstreet_linux_v0_1_42.zip),
   or [read all instructions](docs/INSTRUCTIONS.md) (new releases every Sunday)
 - [build from source](docs/dev.md) (new changes daily)
 
@@ -30,7 +30,6 @@ Measure the effects:
 - [Traffic simulation](docs/articles/trafficsim/article.md)
 - [Rust implementation notes](docs/articles/rust/article.md)
 - [Running A/B Street in a new city](docs/new_city.md)
-- [Current milestones](docs/project/milestones.md)
 - Presentations
   - April 2020 Rust meetup:
     [recording](https://www.youtube.com/watch?v=chYd5I-5oyc),
@@ -126,6 +125,8 @@ Others:
 - Hackathon drop-ins from [Democracy Lab](https://www.democracylab.org/) events
 - [CUGOS](https://cugos.org/) and [Julian Michael](http://julianmichael.org/)
   have been great sounding boards for ideas since the beginning
+- In-game character faces adapted from
+  [Anokhee Jandhyala](https://github.com/anokhee/visual-synthesizer)
 
 Data:
 

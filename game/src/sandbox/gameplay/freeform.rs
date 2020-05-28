@@ -36,13 +36,13 @@ impl GameplayState for Freeform {
         ctx: &mut EventCtx,
         app: &mut App,
         _: &mut SandboxControls,
-    ) -> (Option<Transition>, bool) {
+    ) -> Option<Transition> {
         match self.top_center.event(ctx, app) {
             Some(WrappedOutcome::Transition(t)) => {
-                return (Some(t), false);
+                return Some(t);
             }
             Some(WrappedOutcome::Clicked(_)) => unreachable!(),
-            None => (None, false),
+            None => None,
         }
     }
 
@@ -135,7 +135,7 @@ fn make_load_map(btn: ScreenRectangle, gameplay: GameplayMode) -> Box<dyn State>
                     .map(|n| {
                         let c = Choice::new(nice_map_name(&n), n.clone());
                         // Hardcoded list for now.
-                        if n == "montlake" || n == "23rd" {
+                        if n == "montlake" || n == "23rd" || n == "lakeslice" {
                             c
                         } else {
                             c.tooltip(
@@ -151,9 +151,13 @@ fn make_load_map(btn: ScreenRectangle, gameplay: GameplayMode) -> Box<dyn State>
                 app,
                 match gameplay {
                     GameplayMode::Freeform(_) => GameplayMode::Freeform(abstutil::path_map(&name)),
-                    // Assume a scenario with the same name exists.
+                    // Try to load a scenario with the same name exists
                     GameplayMode::PlayScenario(_, ref scenario) => {
-                        GameplayMode::PlayScenario(abstutil::path_map(&name), scenario.clone())
+                        if abstutil::file_exists(abstutil::path_scenario(&name, scenario)) {
+                            GameplayMode::PlayScenario(abstutil::path_map(&name), scenario.clone())
+                        } else {
+                            GameplayMode::Freeform(abstutil::path_map(&name))
+                        }
                     }
                     _ => unreachable!(),
                 },
@@ -211,7 +215,6 @@ fn make_change_traffic(btn: ScreenRectangle) -> Box<dyn State> {
                 list
             },
         )?;
-        app.primary.clear_sim();
         let map_path = abstutil::path_map(app.primary.map.get_name());
         Some(Transition::PopThenReplace(Box::new(SandboxMode::new(
             ctx,

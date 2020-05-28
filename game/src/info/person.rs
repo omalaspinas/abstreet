@@ -1,14 +1,16 @@
 use crate::app::App;
-use crate::info::{building, header_btns, make_table, make_tabs, trip, Details, Tab};
+use crate::info::{building, header_btns, make_table, make_tabs, trip, Details, OpenTrip, Tab};
 use ezgui::{
-    hotkey, Btn, Color, EventCtx, Key, Line, RewriteColor, Text, TextExt, TextSpan, Widget,
+    hotkey, Btn, Color, EventCtx, GeomBatch, Key, Line, RewriteColor, Text, TextExt, TextSpan,
+    Widget,
 };
 use geom::Duration;
 use map_model::Map;
-use maplit::btreemap;
+use rand::SeedableRng;
+use rand_xorshift::XorShiftRng;
 use sim::{
-    AgentID, CarID, ParkingSpot, PedestrianID, Person, PersonID, PersonState, TripID, TripResult,
-    VehicleType,
+    AgentID, CarID, ParkingSpot, PedestrianID, Person, PersonID, PersonState, TripID, TripMode,
+    TripResult, VehicleType,
 };
 use std::collections::BTreeMap;
 
@@ -17,7 +19,7 @@ pub fn trips(
     app: &App,
     details: &mut Details,
     id: PersonID,
-    open_trips: &BTreeMap<TripID, bool>,
+    open_trips: &mut BTreeMap<TripID, OpenTrip>,
     is_paused: bool,
 ) -> Vec<Widget> {
     let mut rows = header(
@@ -48,16 +50,16 @@ pub fn trips(
                         "delayed start",
                         Color::YELLOW,
                         open_trips
-                            .get(t)
-                            .map(|_| trip::future(ctx, app, *t, details)),
+                            .get_mut(t)
+                            .map(|open_trip| trip::future(ctx, app, *t, open_trip, details)),
                     )
                 } else {
                     (
                         "future",
                         Color::hex("#4CA7E9"),
                         open_trips
-                            .get(t)
-                            .map(|_| trip::future(ctx, app, *t, details)),
+                            .get_mut(t)
+                            .map(|open_trip| trip::future(ctx, app, *t, open_trip, details)),
                     )
                 }
             }
@@ -68,8 +70,8 @@ pub fn trips(
                     "ongoing",
                     Color::hex("#7FFA4D"),
                     open_trips
-                        .get(t)
-                        .map(|_| trip::ongoing(ctx, app, *t, a, details)),
+                        .get_mut(t)
+                        .map(|open_trip| trip::ongoing(ctx, app, *t, a, open_trip, details)),
                 )
             }
             TripResult::RemoteTrip => {
@@ -97,9 +99,11 @@ pub fn trips(
                 (
                     "finished",
                     Color::hex("#A3A3A3"),
-                    open_trips.get(t).map(|show_after| {
-                        trip::finished(ctx, app, id, open_trips, *t, *show_after, details)
-                    }),
+                    if open_trips.contains_key(t) {
+                        Some(trip::finished(ctx, app, id, open_trips, *t, details))
+                    } else {
+                        None
+                    },
                 )
             }
             TripResult::TripAborted => {
@@ -117,23 +121,26 @@ pub fn trips(
         // TODO Style wrong. Button should be the entire row.
         rows.push(
             Widget::row(vec![
-                Text::from_all(vec![
-                    Line(format!("Trip {} ", idx + 1)),
-                    Line(trip_mode.ongoing_verb()).secondary(),
+                format!("Trip {} ", idx + 1).draw_text(ctx).margin_right(21),
+                Widget::row(vec![
+                    Widget::draw_svg_transform(
+                        ctx,
+                        match trip_mode {
+                            TripMode::Walk => "../data/system/assets/meters/pedestrian.svg",
+                            TripMode::Bike => "../data/system/assets/meters/bike.svg",
+                            TripMode::Drive => "../data/system/assets/meters/car.svg",
+                            TripMode::Transit => "../data/system/assets/meters/bus.svg",
+                        },
+                        RewriteColor::ChangeAll(color),
+                    )
+                    .margin_right(10),
+                    Line(trip_status).small().fg(color).draw(ctx),
                 ])
-                .draw(ctx)
+                .fully_rounded()
+                .outline(1.0, color)
+                .bg(color.alpha(0.2))
+                .padding(5)
                 .margin_right(21),
-                // TODO Vertical alignment is weird
-                Line(trip_status)
-                    .small()
-                    .fg(color)
-                    .draw(ctx)
-                    .container()
-                    .fully_rounded()
-                    .outline(1.0, color)
-                    .bg(color.alpha(0.2))
-                    .padding(5)
-                    .margin_right(21),
                 if trip_status == "finished" {
                     if let Some(before) = app
                         .has_prebaked()
@@ -187,7 +194,7 @@ pub fn trips(
                 .insert(format!("hide {}", t), Tab::PersonTrips(id, new_trips));
         } else {
             let mut new_trips = open_trips.clone();
-            new_trips.insert(*t, true);
+            new_trips.insert(*t, OpenTrip::new());
             details
                 .hyperlinks
                 .insert(format!("show {}", t), Tab::PersonTrips(id, new_trips));
@@ -208,14 +215,29 @@ pub fn bio(
     is_paused: bool,
 ) -> Vec<Widget> {
     let mut rows = header(ctx, app, details, id, Tab::PersonBio(id), is_paused);
+    let person = app.primary.sim.get_person(id);
 
-    // TODO A little picture
+    let mut svg_data = Vec::new();
+    svg_face::generate_face(&mut svg_data, &mut XorShiftRng::seed_from_u64(id.0 as u64)).unwrap();
+    let mut batch = GeomBatch::new();
+    batch.add_svg_contents(svg_data);
+    batch = batch.autocrop();
+    let dims = batch.get_dims();
+    batch = batch.scale((200.0 / dims.width).min(200.0 / dims.height));
+    rows.push(
+        Widget::draw_batch(ctx, batch)
+            .centered_horiz()
+            .padding(10)
+            .outline(5.0, Color::WHITE),
+    );
+
     rows.extend(make_table(
         ctx,
         vec![
             ("Name", "Somebody".to_string()),
             ("Age", "42".to_string()),
             ("Occupation", "classified".to_string()),
+            ("Debug ID", format!("{:?}", person.orig_id)),
         ],
     ));
     // TODO Mad libs!
@@ -252,7 +274,6 @@ pub fn bio(
         );
     }
 
-    let person = app.primary.sim.get_person(id);
     let mut has_bike = false;
     for v in &person.vehicles {
         if v.vehicle_type == VehicleType::Bike {
@@ -314,7 +335,12 @@ pub fn crowd(
             person.to_string(),
             Tab::PersonTrips(
                 person,
-                btreemap! {app.primary.sim.agent_to_trip(AgentID::Pedestrian(*id)).unwrap() => true},
+                OpenTrip::single(
+                    app.primary
+                        .sim
+                        .agent_to_trip(AgentID::Pedestrian(*id))
+                        .unwrap(),
+                ),
             ),
         );
     }
@@ -377,11 +403,7 @@ pub fn parked_car(
                 ctx.canvas
                     .center_on_map_pt(app.primary.map.get_b(b).polygon.center());
                 rows.push(
-                    format!(
-                        "Parked inside {}",
-                        app.primary.map.get_b(b).get_name(&app.primary.map)
-                    )
-                    .draw_text(ctx),
+                    format!("Parked inside {}", app.primary.map.get_b(b).address).draw_text(ctx),
                 );
             }
         }
@@ -474,7 +496,7 @@ fn header(
     ]));
 
     let open_trips = if let Some(t) = current_trip {
-        btreemap! {t => true}
+        OpenTrip::single(t)
     } else {
         BTreeMap::new()
     };
@@ -495,7 +517,7 @@ fn current_status(ctx: &EventCtx, person: &Person, map: &Map) -> Widget {
     (match person.state {
         PersonState::Inside(b) => {
             // TODO hyperlink
-            format!("Currently inside {}", map.get_b(b).just_address(map)).draw_text(ctx)
+            format!("Currently inside {}", map.get_b(b).address).draw_text(ctx)
         }
         PersonState::Trip(_) => unreachable!(),
         PersonState::OffMap => "Currently outside the map boundaries".draw_text(ctx),

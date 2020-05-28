@@ -1,15 +1,15 @@
 use crate::app::App;
 use crate::common::CommonState;
-use crate::edit::{apply_map_edits, can_edit_lane};
-use crate::game::{msg, State, Transition, WizardState};
+use crate::edit::{apply_map_edits, can_edit_lane, change_speed_limit};
+use crate::game::{msg, State, Transition};
 use crate::helpers::ID;
 use crate::render::Renderable;
 use crate::sandbox::GameplayMode;
 use ezgui::{
-    hotkey, Btn, Choice, Color, Composite, EventCtx, GfxCtx, HorizontalAlignment, Key, Outcome,
+    hotkey, Btn, Color, Composite, EventCtx, GfxCtx, HorizontalAlignment, Key, Outcome,
     RewriteColor, TextExt, VerticalAlignment, Widget,
 };
-use map_model::{EditCmd, LaneID, LaneType, Map, RoadID};
+use map_model::{EditCmd, LaneID, LaneType, Map};
 use std::collections::BTreeSet;
 
 pub struct LaneEditor {
@@ -73,28 +73,24 @@ impl LaneEditor {
             );
         }
 
+        let parent = app.primary.map.get_parent(l);
         let col = vec![
-            format!(
-                "Convert this lane of {} to what type?",
-                app.primary.map.get_parent(l).get_name()
-            )
-            .draw_text(ctx)
-            .centered_horiz(),
-            Widget::row(row).centered(),
-            Btn::text_fg("Finish").build_def(ctx, hotkey(Key::Escape)),
-            // TODO Not ready for general use
-            if app.opts.dev {
-                Btn::text_fg("Edit entire road").build_def(ctx, hotkey(Key::U))
-            } else {
-                Widget::nothing()
-            },
-            if app.primary.map.get_edits().original_lts.contains_key(&l)
-                || app.primary.map.get_edits().reversed_lanes.contains(&l)
-            {
-                Btn::text_fg("Revert").build_def(ctx, hotkey(Key::R))
-            } else {
-                Btn::text_fg("Revert").inactive(ctx)
-            },
+            format!("Convert this lane of {} to what type?", parent.get_name())
+                .draw_text(ctx)
+                .centered_horiz(),
+            Widget::row(row).centered().margin_below(5),
+            change_speed_limit(ctx, parent.speed_limit).margin_below(5),
+            Widget::row(vec![
+                Btn::text_fg("Finish").build_def(ctx, hotkey(Key::Escape)),
+                if app.primary.map.get_edits().original_lts.contains_key(&l)
+                    || app.primary.map.get_edits().reversed_lanes.contains(&l)
+                {
+                    Btn::text_fg("Revert").build_def(ctx, hotkey(Key::R))
+                } else {
+                    Btn::text_fg("Revert").inactive(ctx)
+                },
+            ])
+            .centered(),
         ];
 
         let composite = Composite::new(Widget::col(col).bg(app.cs.panel_bg).padding(10))
@@ -153,9 +149,6 @@ impl State for LaneEditor {
                     "Finish" => {
                         return Transition::Pop;
                     }
-                    "Edit entire road" => {
-                        return Transition::Replace(make_bulk_edit_lanes(map.get_l(self.l).parent));
-                    }
                     "Revert" => {
                         // TODO It's hard to revert both changes at once.
                         if let Some(lt) = map.get_edits().original_lts.get(&self.l) {
@@ -183,7 +176,26 @@ impl State for LaneEditor {
                     }
                 }
             }
-            None => {}
+            None => {
+                let parent = app.primary.map.get_parent(self.l);
+                let new = self.composite.dropdown_value("speed limit");
+                let old = parent.speed_limit;
+                if new != old {
+                    let mut edits = app.primary.map.get_edits().clone();
+                    edits.commands.push(EditCmd::ChangeSpeedLimit {
+                        id: parent.id,
+                        new,
+                        old,
+                    });
+                    apply_map_edits(ctx, app, edits);
+                    return Transition::Replace(Box::new(LaneEditor::new(
+                        ctx,
+                        app,
+                        self.l,
+                        self.mode.clone(),
+                    )));
+                }
+            }
         }
 
         Transition::Keep
@@ -255,7 +267,7 @@ fn can_change_lane_type(l: LaneID, new_lt: LaneType, map: &Map) -> Option<String
     None
 }
 
-fn try_change_lane_type(l: LaneID, new_lt: LaneType, map: &Map) -> Result<EditCmd, String> {
+pub fn try_change_lane_type(l: LaneID, new_lt: LaneType, map: &Map) -> Result<EditCmd, String> {
     if let Some(err) = can_change_lane_type(l, new_lt, map) {
         return Err(err);
     }
@@ -280,70 +292,4 @@ fn try_reverse(l: LaneID, map: &Map) -> Result<EditCmd, String> {
             dst_i: lane.src_i,
         })
     }
-}
-
-fn make_bulk_edit_lanes(road: RoadID) -> Box<dyn State> {
-    WizardState::new(Box::new(move |wiz, ctx, app| {
-        let mut wizard = wiz.wrap(ctx);
-        let (_, from) = wizard.choose("Change all lanes of type...", || {
-            vec![
-                Choice::new("driving", LaneType::Driving),
-                Choice::new("parking", LaneType::Parking),
-                Choice::new("biking", LaneType::Biking),
-                Choice::new("bus", LaneType::Bus),
-                Choice::new("construction", LaneType::Construction),
-            ]
-        })?;
-        let (_, to) = wizard.choose("Change to all lanes of type...", || {
-            vec![
-                Choice::new("driving", LaneType::Driving),
-                Choice::new("parking", LaneType::Parking),
-                Choice::new("biking", LaneType::Biking),
-                Choice::new("bus", LaneType::Bus),
-                Choice::new("construction", LaneType::Construction),
-            ]
-            .into_iter()
-            .filter(|c| c.data != from)
-            .collect()
-        })?;
-
-        // Do the dirty deed. Match by road name; OSM way ID changes a fair bit.
-        let road_name = app.primary.map.get_r(road).get_name();
-        let mut success = 0;
-        let mut failure = 0;
-        ctx.loading_screen("apply bulk edit", |ctx, timer| {
-            let lane_ids: Vec<LaneID> = app.primary.map.all_lanes().iter().map(|l| l.id).collect();
-            timer.start_iter("update lanes", lane_ids.len());
-            for l in lane_ids {
-                timer.next();
-                let orig_lt = app.primary.map.get_l(l).lane_type;
-                if orig_lt != from || app.primary.map.get_parent(l).get_name() != road_name {
-                    continue;
-                }
-                if can_change_lane_type(l, to, &app.primary.map).is_none() {
-                    let mut edits = app.primary.map.get_edits().clone();
-                    edits.commands.push(EditCmd::ChangeLaneType {
-                        id: l,
-                        lt: to,
-                        orig_lt,
-                    });
-                    // Do this immediately, so the next lane we consider sees the true state of the
-                    // world.
-                    apply_map_edits(ctx, app, edits);
-                    success += 1;
-                } else {
-                    failure += 1;
-                }
-            }
-        });
-
-        // TODO warn about road names changing and being weird. :)
-        Some(Transition::Replace(msg(
-            "Bulk lane edit",
-            vec![format!(
-                "Changed {} {:?} lanes to {:?} lanes on {}. Failed to change {}",
-                success, from, to, road_name, failure
-            )],
-        )))
-    }))
 }

@@ -8,8 +8,8 @@ use crate::{
     NORMAL_LANE_THICKNESS, SIDEWALK_THICKNESS,
 };
 use abstutil::{deserialize_btreemap, serialize_btreemap, Error, Timer, Warn};
-use geom::{Angle, Bounds, Distance, GPSBounds, Line, PolyLine, Polygon, Pt2D};
-use serde_derive::{Deserialize, Serialize};
+use geom::{Angle, Bounds, Distance, GPSBounds, Line, PolyLine, Polygon, Pt2D, Speed};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 #[derive(Serialize, Deserialize)]
@@ -45,15 +45,51 @@ pub struct Map {
     pathfinder: Option<Pathfinder>,
     pathfinder_dirty: bool,
 
+    city_name: String,
     name: String,
+    #[serde(skip_serializing, skip_deserializing)]
     edits: MapEdits,
 }
 
 impl Map {
-    pub fn new(path: String, mut use_map_fixes: bool, timer: &mut Timer) -> Map {
+    pub fn new(path: String, timer: &mut Timer) -> Map {
         if path.starts_with(&abstutil::path_all_maps()) {
             match abstutil::maybe_read_binary(path.clone(), timer) {
                 Ok(map) => {
+                    let map: Map = map;
+
+                    if false {
+                        use abstutil::{prettyprint_usize, serialized_size_bytes};
+                        println!(
+                            "- roads: {} bytes",
+                            prettyprint_usize(serialized_size_bytes(&map.roads))
+                        );
+                        println!(
+                            "- lanes: {} bytes",
+                            prettyprint_usize(serialized_size_bytes(&map.lanes))
+                        );
+                        println!(
+                            "- intersections: {} bytes",
+                            prettyprint_usize(serialized_size_bytes(&map.intersections))
+                        );
+                        println!(
+                            "- turns: {} bytes",
+                            prettyprint_usize(serialized_size_bytes(&map.turns))
+                        );
+                        println!(
+                            "- buildings: {} bytes",
+                            prettyprint_usize(serialized_size_bytes(&map.buildings))
+                        );
+                        println!(
+                            "- areas: {} bytes",
+                            prettyprint_usize(serialized_size_bytes(&map.areas))
+                        );
+                        println!(
+                            "- pathfinder: {} bytes",
+                            prettyprint_usize(serialized_size_bytes(&map.pathfinder))
+                        );
+                    }
+
                     return map;
                 }
                 Err(err) => {
@@ -64,19 +100,13 @@ impl Map {
             }
         }
 
-        let mut raw: RawMap = if path.starts_with(&abstutil::path_all_raw_maps()) {
+        let raw: RawMap = if path.starts_with(&abstutil::path_all_raw_maps()) {
             abstutil::read_binary(path, timer)
         } else {
             // Synthetic
-            use_map_fixes = false;
             abstutil::read_json(path, timer)
         };
-        if use_map_fixes {
-            raw.apply_all_fixes(timer);
-        }
-        // Do this after applying fixes, which might split off pieces of the map.
-        make::remove_disconnected_roads(&mut raw, timer);
-        Map::create_from_raw(raw, timer)
+        Map::create_from_raw(raw, true, timer)
     }
 
     // Just for temporary std::mem::replace tricks.
@@ -103,16 +133,20 @@ impl Map {
             turn_lookup: Vec::new(),
             pathfinder: None,
             pathfinder_dirty: false,
+            city_name: "blank city".to_string(),
             name: "blank".to_string(),
-            edits: MapEdits::new("blank"),
+            edits: MapEdits::new(),
         }
     }
 
-    fn create_from_raw(raw: RawMap, timer: &mut Timer) -> Map {
+    pub fn create_from_raw(mut raw: RawMap, build_ch: bool, timer: &mut Timer) -> Map {
+        // Better to defer this and see RawMaps with more debug info in map_editor
+        make::remove_disconnected::remove_disconnected_roads(&mut raw, timer);
+
         timer.start("raw_map to InitialMap");
         let gps_bounds = raw.gps_bounds.clone();
         let bounds = gps_bounds.to_bounds();
-        let initial_map = make::initial::InitialMap::new(raw.name.clone(), &raw, &bounds, timer);
+        let initial_map = make::initial::InitialMap::new(&raw, &bounds, timer);
         timer.stop("raw_map to InitialMap");
 
         timer.start("InitialMap to half of Map");
@@ -144,53 +178,60 @@ impl Map {
         // Here's a fun one: we can't set up walking_using_transit yet, because we haven't
         // finalized bus stops and routes. We need the bus graph in place for that. So setup
         // pathfinding in two stages.
-        timer.start("setup (most of) Pathfinder");
-        m.pathfinder = Some(Pathfinder::new_without_transit(&m, timer));
-        timer.stop("setup (most of) Pathfinder");
+        if build_ch {
+            timer.start("setup (most of) Pathfinder");
+            m.pathfinder = Some(Pathfinder::new_without_transit(&m, timer));
+            timer.stop("setup (most of) Pathfinder");
 
-        {
-            let (stops, routes) =
-                make::make_bus_stops(&m, &raw.bus_routes, &m.gps_bounds, &m.bounds, timer);
-            m.bus_stops = stops;
-            // The IDs are sorted in the BTreeMap, so this order winds up correct.
-            for id in m.bus_stops.keys() {
-                m.lanes[id.sidewalk.0].bus_stops.push(*id);
+            {
+                let (stops, routes) = make::bus_stops::make_bus_stops(
+                    &m,
+                    &raw.bus_routes,
+                    &m.gps_bounds,
+                    &m.bounds,
+                    timer,
+                );
+                m.bus_stops = stops;
+                // The IDs are sorted in the BTreeMap, so this order winds up correct.
+                for id in m.bus_stops.keys() {
+                    m.lanes[id.sidewalk.0].bus_stops.push(*id);
+                }
+
+                timer.start_iter("verify bus routes are connected", routes.len());
+                for mut r in routes {
+                    timer.next();
+                    if r.stops.is_empty() {
+                        continue;
+                    }
+                    if make::bus_stops::fix_bus_route(&m, &mut r) {
+                        r.id = BusRouteID(m.bus_routes.len());
+                        m.bus_routes.push(r);
+                    } else {
+                        timer.warn(format!("Skipping route {}", r.name));
+                    }
+                }
+
+                // Remove orphaned bus stops
+                let mut remove_stops = HashSet::new();
+                for id in m.bus_stops.keys() {
+                    if m.get_routes_serving_stop(*id).is_empty() {
+                        remove_stops.insert(*id);
+                    }
+                }
+                for id in &remove_stops {
+                    m.bus_stops.remove(id);
+                    m.lanes[id.sidewalk.0]
+                        .bus_stops
+                        .retain(|stop| !remove_stops.contains(stop))
+                }
             }
 
-            timer.start_iter("verify bus routes are connected", routes.len());
-            for mut r in routes {
-                timer.next();
-                if r.stops.is_empty() {
-                    continue;
-                }
-                if make::fix_bus_route(&m, &mut r) {
-                    r.id = BusRouteID(m.bus_routes.len());
-                    m.bus_routes.push(r);
-                } else {
-                    timer.warn(format!("Skipping route {}", r.name));
-                }
-            }
-
-            // Remove orphaned bus stops
-            let mut remove_stops = HashSet::new();
-            for id in m.bus_stops.keys() {
-                if m.get_routes_serving_stop(*id).is_empty() {
-                    remove_stops.insert(*id);
-                }
-            }
-            for id in &remove_stops {
-                m.bus_stops.remove(id);
-                m.lanes[id.sidewalk.0]
-                    .bus_stops
-                    .retain(|stop| !remove_stops.contains(stop))
-            }
+            timer.start("setup rest of Pathfinder (walking with transit)");
+            let mut pathfinder = m.pathfinder.take().unwrap();
+            pathfinder.setup_walking_with_transit(&m);
+            m.pathfinder = Some(pathfinder);
+            timer.stop("setup rest of Pathfinder (walking with transit)");
         }
-
-        timer.start("setup rest of Pathfinder (walking with transit)");
-        let mut pathfinder = m.pathfinder.take().unwrap();
-        pathfinder.setup_walking_with_transit(&m);
-        m.pathfinder = Some(pathfinder);
-        timer.stop("setup rest of Pathfinder (walking with transit)");
 
         let (_, disconnected) = connectivity::find_scc(&m, PathConstraints::Pedestrian);
         if !disconnected.is_empty() {
@@ -431,6 +472,10 @@ impl Map {
         &self.bounds
     }
 
+    pub fn get_city_name(&self) -> &String {
+        &self.city_name
+    }
+
     pub fn get_name(&self) -> &String {
         &self.name
     }
@@ -490,8 +535,13 @@ impl Map {
         result
     }
 
+    pub fn unsaved_edits(&self) -> bool {
+        self.edits.edits_name == "untitled edits" && !self.edits.commands.is_empty()
+    }
+
     pub fn save(&self) {
         assert_eq!(self.edits.edits_name, "untitled edits");
+        assert!(self.edits.commands.is_empty());
         assert!(!self.pathfinder_dirty);
         abstutil::write_binary(abstutil::path_map(&self.name), self);
     }
@@ -634,24 +684,41 @@ impl Map {
         None
     }
 
-    pub fn find_r(&self, id: OriginalRoad) -> RoadID {
-        // TODO Speed up with a mapping?
+    pub fn find_r_by_osm_id(
+        &self,
+        osm_way_id: i64,
+        osm_node_ids: (i64, i64),
+    ) -> Result<RoadID, String> {
         for r in self.all_roads() {
-            if r.orig_id == id {
-                return r.id;
+            if r.orig_id.osm_way_id == osm_way_id
+                && r.orig_id.i1.osm_node_id == osm_node_ids.0
+                && r.orig_id.i2.osm_node_id == osm_node_ids.1
+            {
+                return Ok(r.id);
             }
         }
-        panic!("Can't find {:?}", id);
+        Err(format!(
+            "Can't find osm_way_id {} between nodes {} and {}",
+            osm_way_id, osm_node_ids.0, osm_node_ids.1
+        ))
     }
 
-    pub fn find_i(&self, id: OriginalIntersection) -> IntersectionID {
-        // TODO Speed up with a mapping?
+    pub fn find_i_by_osm_id(&self, osm_node_id: i64) -> Result<IntersectionID, String> {
         for i in self.all_intersections() {
-            if i.orig_id == id {
-                return i.id;
+            if i.orig_id.osm_node_id == osm_node_id {
+                return Ok(i.id);
             }
         }
-        panic!("Can't find {:?}", id);
+        Err(format!("Can't find osm_node_id {}", osm_node_id))
+    }
+
+    pub fn find_b_by_osm_id(&self, osm_way_id: i64) -> Option<BuildingID> {
+        for b in self.all_buildings() {
+            if b.osm_way_id == osm_way_id {
+                return Some(b.id);
+            }
+        }
+        None
     }
 
     pub fn right_shift(&self, pl: PolyLine, width: Distance) -> Warn<PolyLine> {
@@ -673,6 +740,18 @@ impl Map {
     pub fn get_driving_side(&self) -> DrivingSide {
         self.driving_side
     }
+
+    // TODO Sort of a temporary hack
+    pub fn hack_override_offstreet_spots(&mut self, spots_per_bldg: usize) {
+        for b in &mut self.buildings {
+            if let Some(ref mut p) = b.parking {
+                // Leave the parking garages alone
+                if p.num_spots == 1 {
+                    p.num_spots = spots_per_bldg;
+                }
+            }
+        }
+    }
 }
 
 impl Map {
@@ -693,9 +772,12 @@ impl Map {
     }
 
     pub fn save_edits(&mut self) {
-        let mut edits = std::mem::replace(&mut self.edits, MapEdits::new(&self.name));
-        edits.save(self);
+        let mut edits = self.edits.clone();
+        edits.commands.clear();
+        edits.compress(self);
         self.edits = edits;
+
+        self.edits.save(self);
     }
 
     // new_edits assumed to be valid. Returns roads changed, turns deleted, turns added,
@@ -818,8 +900,9 @@ fn make_half_map(
         turn_lookup: Vec::new(),
         pathfinder: None,
         pathfinder_dirty: false,
+        city_name: raw.city_name.clone(),
         name: raw.name.clone(),
-        edits: MapEdits::new(&raw.name),
+        edits: MapEdits::new(),
     };
 
     let road_id_mapping: BTreeMap<OriginalRoad, RoadID> = initial_map
@@ -864,12 +947,29 @@ fn make_half_map(
                 .turn_restrictions
                 .iter()
                 .filter_map(|(rt, to)| {
-                    if let Some(t) = road_id_mapping.get(to) {
-                        Some((*rt, *t))
+                    if let Some(to) = road_id_mapping.get(to) {
+                        Some((*rt, *to))
                     } else {
                         timer.warn(format!(
                             "Turn restriction from {} points to invalid dst {}",
                             r.id, to
+                        ));
+                        None
+                    }
+                })
+                .collect(),
+            complicated_turn_restrictions: raw.roads[&r.id]
+                .complicated_turn_restrictions
+                .iter()
+                .filter_map(|(via, to)| {
+                    if let (Some(via), Some(to)) =
+                        (road_id_mapping.get(via), road_id_mapping.get(to))
+                    {
+                        Some((*via, *to))
+                    } else {
+                        timer.warn(format!(
+                            "Complicated turn restriction from {} has invalid via {} or dst {}",
+                            r.id, via, to
                         ));
                         None
                     }
@@ -881,7 +981,14 @@ fn make_half_map(
             center_pts: r.trimmed_center_pts.clone(),
             src_i: i1,
             dst_i: i2,
+            speed_limit: Speed::ZERO,
+            zorder: if let Some(layer) = raw.roads[&r.id].osm_tags.get("layer") {
+                layer.parse::<isize>().unwrap()
+            } else {
+                0
+            },
         };
+        road.speed_limit = road.speed_limit_from_osm();
 
         for lane in &r.lane_specs {
             let id = LaneID(map.lanes.len());
@@ -954,7 +1061,7 @@ fn make_half_map(
             continue;
         }
 
-        for t in make::make_all_turns(map.driving_side, i, &map.roads, &map.lanes, timer) {
+        for t in make::turns::make_all_turns(map.driving_side, i, &map.roads, &map.lanes, timer) {
             assert!(!map.turns.contains_key(&t.id));
             i.turns.insert(t.id);
             map.turns.insert(t.id, t);
@@ -975,7 +1082,7 @@ fn make_half_map(
     }
     timer.stop("find parking blackholes");
 
-    map.buildings = make::make_all_buildings(&raw.buildings, &map, timer);
+    map.buildings = make::buildings::make_all_buildings(&raw.buildings, &map, timer);
     for b in &map.buildings {
         let lane = b.sidewalk();
 
@@ -995,6 +1102,8 @@ fn make_half_map(
             osm_id: a.osm_id,
         });
     }
+
+    make::bridges::find_bridges(&mut map.roads, &map.bounds, timer);
 
     map
 }
@@ -1098,6 +1207,15 @@ impl EditCmd {
                 recalculate_turns(dst_i, map, effects, timer);
                 true
             }
+            EditCmd::ChangeSpeedLimit { id, new, .. } => {
+                if map.roads[id.0].speed_limit != *new {
+                    map.roads[id.0].speed_limit = *new;
+                    effects.changed_roads.insert(*id);
+                    true
+                } else {
+                    false
+                }
+            }
             EditCmd::ChangeIntersection {
                 i,
                 ref new,
@@ -1154,6 +1272,15 @@ impl EditCmd {
                 }
                 .apply(effects, map, timer)
             }
+            EditCmd::ChangeSpeedLimit { id, old, .. } => {
+                if map.roads[id.0].speed_limit != *old {
+                    map.roads[id.0].speed_limit = *old;
+                    effects.changed_roads.insert(*id);
+                    true
+                } else {
+                    false
+                }
+            }
             EditCmd::ChangeIntersection {
                 i,
                 ref old,
@@ -1194,7 +1321,7 @@ fn recalculate_turns(
         return;
     }
 
-    for t in make::make_all_turns(map.driving_side, i, &map.roads, &map.lanes, timer) {
+    for t in make::turns::make_all_turns(map.driving_side, i, &map.roads, &map.lanes, timer) {
         effects.added_turns.insert(t.id);
         i.turns.insert(t.id);
         if let Some(_existing_t) = old_turns.iter().find(|turn| turn.id == t.id) {

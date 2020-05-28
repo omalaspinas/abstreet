@@ -1,9 +1,8 @@
 use crate::app::{App, PerMap};
-use crate::render::ExtraShapeID;
-use ezgui::{Color, Line, Text, TextSpan};
+use ezgui::{hotkey, Btn, Color, EventCtx, Key, Line, Text, TextSpan, Widget};
 use geom::{Duration, Pt2D};
 use map_model::{AreaID, BuildingID, BusStopID, IntersectionID, LaneID, RoadID, TurnID};
-use sim::{AgentID, CarID, PedestrianID, TripMode};
+use sim::{AgentID, CarID, PedestrianID, TripMode, TripPhaseType};
 use std::collections::BTreeSet;
 
 // Aside from Road and Trip, everything here can actually be selected.
@@ -17,7 +16,6 @@ pub enum ID {
     Car(CarID),
     Pedestrian(PedestrianID),
     PedCrowd(Vec<PedestrianID>),
-    ExtraShape(ExtraShapeID),
     BusStop(BusStopID),
     Area(AreaID),
 }
@@ -60,8 +58,6 @@ impl ID {
             ID::PedCrowd(ref members) => primary
                 .sim
                 .canonical_pt_for_agent(AgentID::Pedestrian(members[0]), &primary.map),
-            // TODO maybe_get_es
-            ID::ExtraShape(id) => Some(primary.draw_map.get_es(id).center()),
             ID::BusStop(id) => primary
                 .map
                 .maybe_get_bs(id)
@@ -100,6 +96,12 @@ pub fn nice_map_name(name: &str) -> &str {
         "intl_district" => "International District and I90",
         "lakeslice" => "Lake Washington corridor",
         "montlake" => "Montlake and Eastlake",
+        "mt_baker" => "Mt Baker",
+        "udistrict" => "Univeristy District",
+        "west_seattle" => "West Seattle",
+        // Outside Seattle
+        "downtown_atx" => "Downtown Austin",
+        "huge_austin" => "Austin (entire area)",
         _ => name,
     }
 }
@@ -130,4 +132,75 @@ pub fn color_for_mode(app: &App, m: TripMode) -> Color {
         TripMode::Transit => app.cs.unzoomed_bus,
         TripMode::Drive => app.cs.unzoomed_car,
     }
+}
+
+pub fn color_for_trip_phase(app: &App, tpt: TripPhaseType) -> Color {
+    match tpt {
+        TripPhaseType::Driving => app.cs.unzoomed_car,
+        TripPhaseType::Walking => app.cs.unzoomed_pedestrian,
+        TripPhaseType::Biking => app.cs.bike_lane,
+        TripPhaseType::Parking => app.cs.parking_trip,
+        TripPhaseType::WaitingForBus(_, _) => app.cs.bus_layer,
+        TripPhaseType::RidingBus(_, _, _) => app.cs.bus_lane,
+        TripPhaseType::Aborted | TripPhaseType::Finished => unreachable!(),
+        TripPhaseType::DelayedStart => Color::YELLOW,
+        TripPhaseType::Remote => Color::PINK,
+    }
+}
+
+pub fn amenity_type(a: &str) -> Option<&str> {
+    if a == "supermarket" || a == "convenience" {
+        Some("groceries")
+    } else if a == "restaurant"
+        || a == "cafe"
+        || a == "fast_food"
+        || a == "food_court"
+        || a == "ice_cream"
+        || a == "pastry"
+        || a == "deli"
+    {
+        Some("food")
+    } else if a == "pub" || a == "bar" || a == "nightclub" || a == "lounge" {
+        Some("bar")
+    } else if a == "doctors"
+        || a == "dentist"
+        || a == "clinic"
+        || a == "pharmacy"
+        || a == "chiropractor"
+    {
+        Some("medical")
+    } else if a == "place_of_worship" {
+        Some("church / temple")
+    } else if a == "college" || a == "school" || a == "kindergarten" || a == "university" {
+        Some("education")
+    } else if a == "bank" || a == "post_office" || a == "atm" {
+        Some("bank / post office")
+    } else if a == "theatre"
+        || a == "arts_centre"
+        || a == "library"
+        || a == "cinema"
+        || a == "art_gallery"
+    {
+        Some("media")
+    } else if a == "childcare" {
+        Some("childcare")
+    } else if a == "second_hand"
+        || a == "clothes"
+        || a == "furniture"
+        || a == "shoes"
+        || a == "department_store"
+    {
+        Some("shopping")
+    } else {
+        None
+    }
+}
+
+// TODO Well, there goes the nice consolidation of stuff in BtnBuilder. :\
+pub fn hotkey_btn<I: Into<String>>(ctx: &EventCtx, app: &App, label: I, key: Key) -> Widget {
+    let label = label.into();
+    let mut txt = Text::new();
+    txt.append(Line(key.describe()).fg(ctx.style().hotkey_color));
+    txt.append(Line(format!(" - {}", label)));
+    Btn::text_bg(label, txt, app.cs.section_bg, app.cs.hovering).build_def(ctx, hotkey(key))
 }

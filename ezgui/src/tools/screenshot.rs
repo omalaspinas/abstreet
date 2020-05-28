@@ -31,7 +31,7 @@ pub(crate) fn screenshot_everything<G: GUI>(
             state.canvas.cam_y = (tile_y as f64) * state.canvas.window_height;
 
             let suffix = state.draw(prerender, true).unwrap_or_else(String::new);
-            let filename = format!("{:02}x{:02}{}.png", tile_x + 1, tile_y + 1, suffix);
+            let filename = format!("{:02}x{:02}{}.gif", tile_x + 1, tile_y + 1, suffix);
 
             // TODO Is vsync or something else causing the above redraw to not actually show up in
             // time for scrot to see it? This is slow (30s total for Montlake), but stable.
@@ -52,15 +52,15 @@ pub(crate) fn screenshot_everything<G: GUI>(
     finish(dir_path, filenames, num_tiles_x, num_tiles_y);
 }
 
-pub(crate) fn screenshot_current<G: GUI>(state: &mut State<G>, prerender: &Prerender) {
-    state.draw(prerender, true);
-    thread::sleep(time::Duration::from_millis(100));
-    screencap("../screenshot.png");
-}
-
 fn screencap(filename: &str) -> bool {
     if !process::Command::new("scrot")
-        .args(&["--quality", "100", "--focused", "--silent", filename])
+        .args(&[
+            "--quality",
+            "100",
+            "--focused",
+            "--silent",
+            "screenshot.png",
+        ])
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
@@ -68,36 +68,37 @@ fn screencap(filename: &str) -> bool {
         println!("Screencapping failed; you probably don't have scrot (https://en.wikipedia.org/wiki/Scrot) installed");
         return false;
     }
+    if !process::Command::new("convert")
+        .arg("screenshot.png")
+        .arg(filename)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        println!(
+            "Screencapping failed; you probably don't have convert (https://imagemagick.org) \
+             installed"
+        );
+        return false;
+    }
+    process::Command::new("rm")
+        .arg("screenshot.png")
+        .status()
+        .unwrap();
+
     true
 }
 
 fn finish(dir_path: &str, filenames: Vec<String>, num_tiles_x: usize, num_tiles_y: usize) {
-    {
-        let mut args = filenames.clone();
-        args.push("-mode".to_string());
-        args.push("Concatenate".to_string());
-        args.push("-tile".to_string());
-        args.push(format!("{}x{}", num_tiles_x, num_tiles_y));
-        args.push("full.png".to_string());
+    let mut args = filenames;
+    args.push("-mode".to_string());
+    args.push("Concatenate".to_string());
+    args.push("-tile".to_string());
+    args.push(format!("{}x{}", num_tiles_x, num_tiles_y));
+    args.push("full.gif".to_string());
 
-        let mut file = fs::File::create(format!("{}/combine.sh", dir_path)).unwrap();
-        writeln!(file, "#!/bin/bash\n").unwrap();
-        writeln!(file, "montage {}", args.join(" ")).unwrap();
-        writeln!(file, "rm -f combine.sh").unwrap();
-    }
-
-    {
-        let output = process::Command::new("md5sum")
-            .args(
-                &filenames
-                    .into_iter()
-                    .map(|f| format!("{}/{}", dir_path, f))
-                    .collect::<Vec<String>>(),
-            )
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        let mut file = fs::File::create(format!("{}/MANIFEST", dir_path)).unwrap();
-        file.write_all(&output.stdout).unwrap();
-    }
+    let mut file = fs::File::create(format!("{}/combine.sh", dir_path)).unwrap();
+    writeln!(file, "#!/bin/bash\n").unwrap();
+    writeln!(file, "montage {}", args.join(" ")).unwrap();
+    writeln!(file, "rm -f combine.sh").unwrap();
 }

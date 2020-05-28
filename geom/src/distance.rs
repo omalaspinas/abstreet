@@ -1,5 +1,5 @@
 use crate::{trim_f64, Duration, Speed};
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::{cmp, f64, fmt, ops};
 
 // In meters. Can be negative.
@@ -59,14 +59,21 @@ impl Distance {
         self.0
     }
 
+    // TODO Store a bit in Maps to mark if they're in the US or not, plumb here to use meters
     pub fn describe_rounded(self) -> String {
-        format!("{}m", self.0.round())
+        let feet = self.0 * 3.28084;
+        let miles = feet / 5280.0;
+        if miles >= 0.1 {
+            format!("{} miles", (miles * 10.0).round() / 10.0)
+        } else {
+            format!("{} ft", feet.round())
+        }
     }
 }
 
 impl fmt::Display for Distance {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // TODO commas every third place
+        // TODO This is harder to localize
         write!(f, "{}m", self.0)
     }
 }
@@ -166,5 +173,11 @@ impl std::iter::Sum for Distance {
             sum += x;
         }
         sum
+    }
+}
+
+impl Default for Distance {
+    fn default() -> Distance {
+        Distance::ZERO
     }
 }

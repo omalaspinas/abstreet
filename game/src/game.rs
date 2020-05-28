@@ -34,7 +34,7 @@ impl Game {
             // TODO Maybe loading screen
             let mut timer = abstutil::Timer::new("apply initial edits");
             let edits =
-                map_model::MapEdits::load(app.primary.map.get_name(), &edits_name, &mut timer);
+                map_model::MapEdits::load(&app.primary.map, &edits_name, &mut timer).unwrap();
             crate::edit::apply_map_edits(ctx, &mut app, edits);
             app.primary
                 .map
@@ -68,6 +68,7 @@ impl GUI for Game {
             Transition::KeepWithMode(evmode) => {
                 return evmode;
             }
+            Transition::KeepWithMouseover => {}
             Transition::Pop => {
                 self.states.pop().unwrap().on_destroy(ctx, &mut self.app);
                 if self.states.is_empty() {
@@ -80,10 +81,6 @@ impl GUI for Game {
                 cb(self.states.last_mut().unwrap(), &mut self.app, ctx);
             }
             Transition::PushWithData(cb) => {
-                self.states
-                    .last_mut()
-                    .unwrap()
-                    .on_suspend(ctx, &mut self.app);
                 let new_state = cb(self.states.last_mut().unwrap(), &mut self.app, ctx);
                 self.states.push(new_state);
             }
@@ -101,10 +98,6 @@ impl GUI for Game {
                 self.states.pop().unwrap().on_destroy(ctx, &mut self.app);
             }
             Transition::Push(state) => {
-                self.states
-                    .last_mut()
-                    .unwrap()
-                    .on_suspend(ctx, &mut self.app);
                 self.states.push(state);
             }
             Transition::Replace(state) => {
@@ -129,10 +122,6 @@ impl GUI for Game {
                 self.states.extend(states);
             }
             Transition::PushTwice(s1, s2) => {
-                self.states
-                    .last_mut()
-                    .unwrap()
-                    .on_suspend(ctx, &mut self.app);
                 self.states.push(s1);
                 self.states.push(s2);
             }
@@ -207,8 +196,6 @@ pub trait State: downcast_rs::Downcast {
         DrawBaselayer::DefaultMap
     }
 
-    // Before we push a new state on top of this one, call this.
-    fn on_suspend(&mut self, _: &mut EventCtx, _: &mut App) {}
     // Before this state is popped or replaced, call this.
     fn on_destroy(&mut self, _: &mut EventCtx, _: &mut App) {}
     // We don't need an on_enter -- the constructor for the state can just do it.
@@ -232,6 +219,7 @@ downcast_rs::impl_downcast!(State);
 pub enum Transition {
     Keep,
     KeepWithMode(EventLoopMode),
+    KeepWithMouseover,
     Pop,
     PopTwice,
     // If a state needs to pass data back to the parent, use this. Sadly, runtime type casting.
@@ -254,6 +242,7 @@ pub struct WizardState {
     // Returning None means stay in this WizardState
     cb: Box<dyn Fn(&mut Wizard, &mut EventCtx, &mut App) -> Option<Transition>>,
     pub also_draw: Option<Drawable>,
+    pub custom_pop: Option<Transition>,
 }
 
 impl WizardState {
@@ -264,15 +253,23 @@ impl WizardState {
             wizard: Wizard::new(),
             cb,
             also_draw: None,
+            custom_pop: None,
         })
     }
 }
 
 impl State for WizardState {
     fn event(&mut self, ctx: &mut EventCtx, app: &mut App) -> Transition {
+        if self.also_draw.is_some() {
+            // TODO This should really be a separate option
+            ctx.canvas_movement();
+        }
         if let Some(t) = (self.cb)(&mut self.wizard, ctx, app) {
             return t;
         } else if self.wizard.aborted() {
+            if let Some(t) = self.custom_pop.take() {
+                return t;
+            }
             return Transition::Pop;
         }
         Transition::Keep
@@ -283,13 +280,11 @@ impl State for WizardState {
     }
 
     fn draw(&self, g: &mut GfxCtx, app: &App) {
-        // TODO This shouldn't get greyed out, but I think the weird z-ordering of screen-space
-        // right now is messing this up.
         if let Some(ref d) = self.also_draw {
             g.redraw(d);
+        } else {
+            State::grey_out_map(g, app);
         }
-
-        State::grey_out_map(g, app);
 
         self.wizard.draw(g);
     }

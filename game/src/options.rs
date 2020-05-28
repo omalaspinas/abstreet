@@ -13,21 +13,26 @@ pub struct Options {
     pub color_scheme: ColorSchemeChoice,
     pub dev: bool,
     pub time_increment: Duration,
+    pub min_zoom_for_detail: f64,
+    pub large_unzoomed_agents: bool,
 }
 
 impl Options {
     pub fn default() -> Options {
         Options {
-            traffic_signal_style: TrafficSignalStyle::GroupArrows,
+            traffic_signal_style: TrafficSignalStyle::BAP,
             color_scheme: ColorSchemeChoice::Standard,
             dev: false,
             time_increment: Duration::minutes(10),
+            min_zoom_for_detail: 4.0,
+            large_unzoomed_agents: false,
         }
     }
 }
 
 #[derive(Clone, PartialEq)]
 pub enum TrafficSignalStyle {
+    BAP,
     GroupArrows,
     Sidewalks,
     Icons,
@@ -59,6 +64,13 @@ impl OptionsPanel {
                     .margin(5),
                     Checkbox::text(
                         ctx,
+                        "Enable panning map when cursor is at edge of screen",
+                        None,
+                        ctx.canvas.edge_auto_panning,
+                    )
+                    .named("disable pan"),
+                    Checkbox::text(
+                        ctx,
                         "Use touchpad to pan and hold Control to zoom",
                         None,
                         ctx.canvas.touchpad_to_move,
@@ -71,6 +83,11 @@ impl OptionsPanel {
                             "Traffic signal rendering",
                             app.opts.traffic_signal_style.clone(),
                             vec![
+                                Choice::new(
+                                    "Brian's variation of arrows showing the protected and \
+                                     permitted movements",
+                                    TrafficSignalStyle::BAP,
+                                ),
                                 Choice::new(
                                     "arrows showing the protected and permitted movements",
                                     TrafficSignalStyle::GroupArrows,
@@ -119,11 +136,37 @@ impl OptionsPanel {
                             ],
                         ),
                     ]),
+                    Widget::row(vec![
+                        "Camera zoom to switch to unzoomed view"
+                            .draw_text(ctx)
+                            .margin(5),
+                        Widget::dropdown(
+                            ctx,
+                            "min zoom",
+                            app.opts.min_zoom_for_detail,
+                            vec![
+                                Choice::new("1.0", 1.0),
+                                Choice::new("2.0", 2.0),
+                                Choice::new("3.0", 3.0),
+                                Choice::new("4.0", 4.0),
+                                Choice::new("5.0", 5.0),
+                                Choice::new("6.0", 6.0),
+                            ],
+                        ),
+                    ]),
+                    Checkbox::text(
+                        ctx,
+                        "Draw enlarged unzoomed agents",
+                        None,
+                        app.opts.large_unzoomed_agents,
+                    )
+                    .margin(5),
                     Btn::text_bg2("Apply")
                         .build_def(ctx, hotkey(Key::Enter))
                         .margin(5)
                         .centered_horiz(),
                 ])
+                .padding(10)
                 .bg(app.cs.panel_bg),
             )
             .build(ctx),
@@ -145,6 +188,7 @@ impl State for OptionsPanel {
                     ctx.canvas.touchpad_to_move = self
                         .composite
                         .is_checked("Use touchpad to pan and hold Control to zoom");
+                    ctx.canvas.edge_auto_panning = self.composite.is_checked("disable pan");
                     app.opts.dev = self.composite.is_checked("Enable developer mode");
 
                     let style = self.composite.dropdown_value("Traffic signal rendering");
@@ -166,6 +210,10 @@ impl State for OptionsPanel {
                     if ctx.get_scale_factor() != factor {
                         ctx.set_scale_factor(factor);
                     }
+
+                    app.opts.min_zoom_for_detail = self.composite.dropdown_value("min zoom");
+                    app.opts.large_unzoomed_agents =
+                        self.composite.is_checked("Draw enlarged unzoomed agents");
 
                     return Transition::Pop;
                 }

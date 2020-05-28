@@ -1,5 +1,4 @@
 mod clip;
-mod neighborhoods;
 mod osm_reader;
 mod split_ways;
 mod srtm;
@@ -14,30 +13,38 @@ use map_model::raw::{DrivingSide, OriginalBuilding, OriginalRoad, RawMap};
 const DIRECTED_ROAD_THICKNESS: Distance = Distance::const_meters(2.5);
 
 pub struct Options {
-    pub osm: String,
+    pub osm_input: String,
+    pub city_name: String,
+    pub name: String,
+
     pub parking_shapes: Option<String>,
     pub public_offstreet_parking: Option<String>,
     pub private_offstreet_parking: PrivateOffstreetParking,
     pub sidewalks: Option<String>,
     pub gtfs: Option<String>,
-    pub neighborhoods: Option<String>,
     pub elevation: Option<String>,
     pub clip: Option<String>,
     pub drive_on_right: bool,
-    pub output: String,
 }
 
 // If a building doesn't have anything from public_offstreet_parking, how many private spots should
 // it have?
 pub enum PrivateOffstreetParking {
-    ZeroPerBldg,
-    OnePerBldg,
+    FixedPerBldg(usize),
     // TODO Based on the number of residents?
 }
 
 pub fn convert(opts: Options, timer: &mut abstutil::Timer) -> RawMap {
-    let (mut map, amenities) =
-        split_ways::split_up_roads(osm_reader::extract_osm(&opts.osm, &opts.clip, timer), timer);
+    let (mut map, amenities) = split_ways::split_up_roads(
+        osm_reader::extract_osm(
+            &opts.osm_input,
+            &opts.clip,
+            &opts.city_name,
+            &opts.name,
+            timer,
+        ),
+        timer,
+    );
     clip::clip_map(&mut map, timer);
     map.driving_side = if opts.drive_on_right {
         DrivingSide::Right
@@ -68,12 +75,6 @@ pub fn convert(opts: Options, timer: &mut abstutil::Timer) -> RawMap {
     }
     if let Some(ref path) = opts.elevation {
         use_elevation(&mut map, path, timer);
-    }
-
-    if let Some(ref path) = opts.neighborhoods {
-        timer.start("convert neighborhood polygons");
-        neighborhoods::convert(path.clone(), map.name.clone(), &map.gps_bounds);
-        timer.stop("convert neighborhood polygons");
     }
 
     map
@@ -228,12 +229,11 @@ fn use_offstreet_parking(map: &mut RawMap, path: String, timer: &mut Timer) {
 
 fn apply_private_offstreet_parking(map: &mut RawMap, policy: PrivateOffstreetParking) {
     match policy {
-        PrivateOffstreetParking::ZeroPerBldg => {}
-        PrivateOffstreetParking::OnePerBldg => {
+        PrivateOffstreetParking::FixedPerBldg(n) => {
             for b in map.buildings.values_mut() {
                 if b.public_garage_name.is_none() {
                     assert_eq!(b.num_parking_spots, 0);
-                    b.num_parking_spots = 1;
+                    b.num_parking_spots = n;
                 }
             }
         }

@@ -9,22 +9,21 @@ mod trip;
 use crate::app::App;
 use crate::common::Warping;
 use crate::game::Transition;
-use crate::helpers::{color_for_mode, ID};
-use crate::render::{ExtraShapeID, MIN_ZOOM_FOR_DETAIL};
+use crate::helpers::{color_for_mode, hotkey_btn, ID};
 use crate::sandbox::{SandboxMode, TimeWarpScreen};
 use ezgui::{
-    hotkey, Btn, Checkbox, Choice, Color, Composite, Drawable, EventCtx, GeomBatch, GfxCtx,
-    HorizontalAlignment, Key, Line, LinePlot, Outcome, PlotOptions, Series, Text, TextExt,
+    hotkey, Btn, Checkbox, Color, Composite, Drawable, EventCtx, GeomBatch, GfxCtx,
+    HorizontalAlignment, Key, Line, LinePlot, Outcome, PlotOptions, Series, TextExt,
     VerticalAlignment, Widget,
 };
-use geom::{Circle, Distance, Duration, Time};
+use geom::{Circle, Distance, Time};
 use map_model::{AreaID, BuildingID, BusStopID, IntersectionID, LaneID};
-use maplit::btreemap;
 use sim::{
     AgentID, Analytics, CarID, ParkingSpot, PedestrianID, PersonID, PersonState, TripID, TripMode,
     VehicleType,
 };
 use std::collections::{BTreeMap, HashMap};
+pub use trip::OpenTrip;
 
 pub struct InfoPanel {
     tab: Tab,
@@ -49,7 +48,7 @@ pub struct InfoPanel {
 pub enum Tab {
     // What trips are open? For finished trips, show the timeline in the current simulation if
     // true, prebaked if false.
-    PersonTrips(PersonID, BTreeMap<TripID, bool>),
+    PersonTrips(PersonID, BTreeMap<TripID, OpenTrip>),
     PersonBio(PersonID),
 
     BusStatus(CarID),
@@ -59,17 +58,16 @@ pub enum Tab {
     ParkedCar(CarID),
 
     BldgInfo(BuildingID),
-    BldgDebug(BuildingID),
     BldgPeople(BuildingID),
 
     Crowd(Vec<PedestrianID>),
 
     Area(AreaID),
-    ExtraShape(ExtraShapeID),
 
     IntersectionInfo(IntersectionID),
     IntersectionTraffic(IntersectionID, DataOptions),
     IntersectionDelay(IntersectionID, DataOptions),
+    IntersectionDemand(IntersectionID),
 
     LaneInfo(LaneID),
     LaneDebug(LaneID),
@@ -88,7 +86,7 @@ impl Tab {
                 if let Some(p) = app.primary.sim.agent_to_person(AgentID::Car(c)) {
                     Tab::PersonTrips(
                         p,
-                        btreemap! {app.primary.sim.agent_to_trip(AgentID::Car(c)).unwrap() => true},
+                        OpenTrip::single(app.primary.sim.agent_to_trip(AgentID::Car(c)).unwrap()),
                     )
                 } else if c.1 == VehicleType::Bus {
                     Tab::BusStatus(c)
@@ -101,20 +99,24 @@ impl Tab {
                     .sim
                     .agent_to_person(AgentID::Pedestrian(p))
                     .unwrap(),
-                btreemap! {app.primary.sim.agent_to_trip(AgentID::Pedestrian(p)).unwrap() => true},
+                OpenTrip::single(
+                    app.primary
+                        .sim
+                        .agent_to_trip(AgentID::Pedestrian(p))
+                        .unwrap(),
+                ),
             ),
             ID::PedCrowd(members) => Tab::Crowd(members),
-            ID::ExtraShape(es) => Tab::ExtraShape(es),
             ID::BusStop(bs) => Tab::BusStop(bs),
             ID::Area(a) => Tab::Area(a),
         }
     }
 
     // TODO Temporary hack until object actions go away.
-    fn to_id(self, app: &App) -> Option<ID> {
+    fn to_id(&self, app: &App) -> Option<ID> {
         match self {
             Tab::PersonTrips(p, _) | Tab::PersonBio(p) => {
-                match app.primary.sim.get_person(p).state {
+                match app.primary.sim.get_person(*p).state {
                     PersonState::Inside(b) => Some(ID::Building(b)),
                     PersonState::Trip(t) => app
                         .primary
@@ -125,26 +127,36 @@ impl Tab {
                     _ => None,
                 }
             }
-            Tab::BusStatus(c) | Tab::BusDelays(c) => Some(ID::Car(c)),
-            Tab::BusStop(bs) => Some(ID::BusStop(bs)),
+            Tab::BusStatus(c) | Tab::BusDelays(c) => Some(ID::Car(*c)),
+            Tab::BusStop(bs) => Some(ID::BusStop(*bs)),
             // TODO If a parked car becomes in use while the panel is open, should update the panel
             // better.
-            Tab::ParkedCar(c) => match app.primary.sim.lookup_parked_car(c)?.spot {
-                ParkingSpot::Onstreet(_, _) => Some(ID::Car(c)),
+            Tab::ParkedCar(c) => match app.primary.sim.lookup_parked_car(*c)?.spot {
+                ParkingSpot::Onstreet(_, _) => Some(ID::Car(*c)),
                 ParkingSpot::Offstreet(b, _) => Some(ID::Building(b)),
             },
-            Tab::BldgInfo(b) | Tab::BldgDebug(b) | Tab::BldgPeople(b) => Some(ID::Building(b)),
-            Tab::Crowd(members) => Some(ID::PedCrowd(members)),
-            Tab::Area(a) => Some(ID::Area(a)),
-            Tab::ExtraShape(es) => Some(ID::ExtraShape(es)),
+            Tab::BldgInfo(b) | Tab::BldgPeople(b) => Some(ID::Building(*b)),
+            Tab::Crowd(members) => Some(ID::PedCrowd(members.clone())),
+            Tab::Area(a) => Some(ID::Area(*a)),
             Tab::IntersectionInfo(i)
             | Tab::IntersectionTraffic(i, _)
-            | Tab::IntersectionDelay(i, _) => Some(ID::Intersection(i)),
-            Tab::LaneInfo(l) | Tab::LaneDebug(l) | Tab::LaneTraffic(l, _) => Some(ID::Lane(l)),
+            | Tab::IntersectionDelay(i, _)
+            | Tab::IntersectionDemand(i) => Some(ID::Intersection(*i)),
+            Tab::LaneInfo(l) | Tab::LaneDebug(l) | Tab::LaneTraffic(l, _) => Some(ID::Lane(*l)),
         }
     }
 
     fn changed_settings(&self, c: &Composite) -> Option<Tab> {
+        // Avoid an occasionally expensive clone.
+        match self {
+            Tab::IntersectionTraffic(_, _)
+            | Tab::IntersectionDelay(_, _)
+            | Tab::LaneTraffic(_, _) => {}
+            _ => {
+                return None;
+            }
+        }
+
         let mut new_tab = self.clone();
         match new_tab {
             Tab::IntersectionTraffic(_, ref mut opts)
@@ -152,7 +164,7 @@ impl Tab {
             | Tab::LaneTraffic(_, ref mut opts) => {
                 *opts = DataOptions::from_controls(c);
             }
-            _ => {}
+            _ => unreachable!(),
         }
         if &new_tab == self {
             None
@@ -175,7 +187,7 @@ impl InfoPanel {
     pub fn new(
         ctx: &mut EventCtx,
         app: &App,
-        tab: Tab,
+        mut tab: Tab,
         ctx_actions: &mut dyn ContextualActions,
     ) -> InfoPanel {
         let mut details = Details {
@@ -187,7 +199,7 @@ impl InfoPanel {
         };
 
         let (mut col, main_tab) = match tab {
-            Tab::PersonTrips(p, ref open) => (
+            Tab::PersonTrips(p, ref mut open) => (
                 person::trips(ctx, app, &mut details, p, open, ctx_actions.is_paused()),
                 true,
             ),
@@ -203,11 +215,9 @@ impl InfoPanel {
                 true,
             ),
             Tab::BldgInfo(b) => (building::info(ctx, app, &mut details, b), true),
-            Tab::BldgDebug(b) => (building::debug(ctx, app, &mut details, b), false),
             Tab::BldgPeople(b) => (building::people(ctx, app, &mut details, b), false),
             Tab::Crowd(ref members) => (person::crowd(ctx, app, &mut details, members), true),
             Tab::Area(a) => (debug::area(ctx, app, &mut details, a), true),
-            Tab::ExtraShape(es) => (debug::extra_shape(ctx, app, &mut details, es), true),
             Tab::IntersectionInfo(i) => (intersection::info(ctx, app, &mut details, i), true),
             Tab::IntersectionTraffic(i, ref opts) => (
                 intersection::traffic(ctx, app, &mut details, i, opts),
@@ -216,26 +226,23 @@ impl InfoPanel {
             Tab::IntersectionDelay(i, ref opts) => {
                 (intersection::delay(ctx, app, &mut details, i, opts), false)
             }
+            Tab::IntersectionDemand(i) => (
+                intersection::current_demand(ctx, app, &mut details, i),
+                false,
+            ),
             Tab::LaneInfo(l) => (lane::info(ctx, app, &mut details, l), true),
             Tab::LaneDebug(l) => (lane::debug(ctx, app, &mut details, l), false),
             Tab::LaneTraffic(l, ref opts) => {
                 (lane::traffic(ctx, app, &mut details, l, opts), false)
             }
         };
-        let maybe_id = tab.clone().to_id(app);
+        let maybe_id = tab.to_id(app);
         let mut cached_actions = Vec::new();
         if main_tab {
             if let Some(id) = maybe_id.clone() {
                 for (key, label) in ctx_actions.actions(app, id) {
                     cached_actions.push(key);
-                    let mut txt = Text::new();
-                    txt.append(Line(key.describe()).fg(ctx.style().hotkey_color));
-                    txt.append(Line(format!(" - {}", label)));
-                    col.push(
-                        Btn::text_bg(label, txt, app.cs.section_bg, app.cs.hovering)
-                            .build_def(ctx, hotkey(key))
-                            .margin(5),
-                    );
+                    col.push(hotkey_btn(ctx, app, label, key).margin(5));
                 }
             }
         }
@@ -280,10 +287,6 @@ impl InfoPanel {
                         Circle::outline(bounds.center(), radius, Distance::meters(0.3)),
                     );
                     details.zoomed.push(
-                        app.cs.current_object.alpha(0.5),
-                        Circle::new(bounds.center(), radius).to_polygon(),
-                    );
-                    details.zoomed.push(
                         app.cs.current_object,
                         Circle::outline(bounds.center(), radius, Distance::meters(0.3)),
                     );
@@ -310,11 +313,7 @@ impl InfoPanel {
                     VerticalAlignment::Percent(0.2),
                 )
                 // TODO Some headings are too wide.. Intersection #xyz (Traffic signals)
-                // TODO Want exact_size_percent, but this mess up scrolling! Argh
-                .max_size_percent(30, 60)
-                // trip::details endpoints...
-                // TODO I think we can remove this now
-                .allow_duplicate_buttons()
+                .exact_size_percent(30, 60)
                 .build(ctx),
             unzoomed: details.unzoomed.upload(ctx),
             zoomed: details.zoomed.upload(ctx),
@@ -348,7 +347,7 @@ impl InfoPanel {
             return (false, None);
         }
 
-        let maybe_id = self.tab.clone().to_id(app);
+        let maybe_id = self.tab.to_id(app);
         match self.composite.event(ctx) {
             Some(Outcome::Clicked(action)) => {
                 if let Some(new_tab) = self.hyperlinks.get(&action).cloned() {
@@ -368,7 +367,7 @@ impl InfoPanel {
                     (true, None)
                 } else if action == "jump to object" {
                     // TODO Messy way of doing this
-                    if let Some(id) = self.tab.clone().to_id(app) {
+                    if let Some(id) = self.tab.to_id(app) {
                         return (
                             false,
                             Some(Transition::Push(Warping::new(
@@ -409,7 +408,6 @@ impl InfoPanel {
 
                                 if time < app.primary.sim.time() {
                                     sandbox = ctx.loading_screen("rewind simulation", |ctx, _| {
-                                        app.primary.clear_sim();
                                         Box::new(SandboxMode::new(ctx, app, sandbox.gameplay_mode))
                                     });
                                 }
@@ -418,7 +416,7 @@ impl InfoPanel {
                                 sandbox.controls.common.as_mut().unwrap().launch_info_panel(
                                     ctx,
                                     app,
-                                    Tab::PersonTrips(person, btreemap! { trip => true }),
+                                    Tab::PersonTrips(person, OpenTrip::single(trip)),
                                     &mut actions,
                                 );
 
@@ -447,9 +445,9 @@ impl InfoPanel {
         }
     }
 
-    pub fn draw(&self, g: &mut GfxCtx) {
+    pub fn draw(&self, g: &mut GfxCtx, app: &App) {
         self.composite.draw(g);
-        if g.canvas.cam_zoom < MIN_ZOOM_FOR_DETAIL {
+        if g.canvas.cam_zoom < app.opts.min_zoom_for_detail {
             g.redraw(&self.unzoomed);
         } else {
             g.redraw(&self.zoomed);
@@ -461,7 +459,7 @@ impl InfoPanel {
     }
 
     pub fn active_id(&self, app: &App) -> Option<ID> {
-        self.tab.clone().to_id(app)
+        self.tab.to_id(app)
     }
 }
 
@@ -489,13 +487,13 @@ fn make_table<I: Into<String>>(ctx: &EventCtx, rows: Vec<(I, String)>) -> Vec<Wi
     ])]*/
 }
 
-fn throughput<F: Fn(&Analytics, Time) -> BTreeMap<TripMode, Vec<(Time, usize)>>>(
+fn throughput<F: Fn(&Analytics) -> Vec<(TripMode, Vec<(Time, usize)>)>>(
     ctx: &EventCtx,
     app: &App,
     get_data: F,
     show_before: bool,
 ) -> Widget {
-    let mut series = get_data(app.primary.sim.get_analytics(), app.primary.sim.time())
+    let mut series = get_data(app.primary.sim.get_analytics())
         .into_iter()
         .map(|(m, pts)| Series {
             label: m.ongoing_verb().to_string(),
@@ -505,7 +503,7 @@ fn throughput<F: Fn(&Analytics, Time) -> BTreeMap<TripMode, Vec<(Time, usize)>>>
         .collect::<Vec<_>>();
     if show_before {
         // TODO Ahh these colors don't show up differently at all.
-        for (m, pts) in get_data(app.prebaked(), app.primary.sim.get_end_of_day()) {
+        for (m, pts) in get_data(app.prebaked()) {
             series.push(Series {
                 label: format!("{} (before changes)", m.ongoing_verb()),
                 color: color_for_mode(app, m).alpha(0.3),
@@ -566,46 +564,26 @@ pub trait ContextualActions {
 #[derive(Clone, PartialEq)]
 pub struct DataOptions {
     pub show_before: bool,
-    pub bucket_size: Duration,
 }
 
 impl DataOptions {
     pub fn new(app: &App) -> DataOptions {
         DataOptions {
             show_before: app.has_prebaked().is_some(),
-            bucket_size: Duration::minutes(20),
         }
     }
 
     pub fn to_controls(&self, ctx: &mut EventCtx, app: &App) -> Widget {
-        Widget::col(vec![
-            Widget::row(vec![
-                "In".draw_text(ctx),
-                Widget::dropdown(
-                    ctx,
-                    "bucket size",
-                    self.bucket_size,
-                    vec![
-                        Choice::new("20 minute", Duration::minutes(20)),
-                        Choice::new("1 hour", Duration::hours(1)),
-                        Choice::new("6 hour", Duration::hours(6)),
-                    ],
-                )
-                .margin(3),
-                "buckets".draw_text(ctx),
-            ]),
-            if app.has_prebaked().is_some() {
-                Checkbox::text(ctx, "Show before changes", None, self.show_before)
-            } else {
-                Widget::nothing()
-            },
-        ])
+        Widget::col(vec![if app.has_prebaked().is_some() {
+            Checkbox::text(ctx, "Show before changes", None, self.show_before)
+        } else {
+            Widget::nothing()
+        }])
     }
 
     pub fn from_controls(c: &Composite) -> DataOptions {
         DataOptions {
             show_before: c.has_widget("Show before changes") && c.is_checked("Show before changes"),
-            bucket_size: c.dropdown_value("bucket size"),
         }
     }
 }

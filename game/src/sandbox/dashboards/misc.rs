@@ -1,6 +1,6 @@
 use crate::app::App;
 use crate::common::Tab;
-use crate::game::{msg, State, Transition};
+use crate::game::{msg, DrawBaselayer, State, Transition};
 use crate::sandbox::dashboards::DashTab;
 use crate::sandbox::SandboxMode;
 use ezgui::{
@@ -35,13 +35,13 @@ impl ActiveTraffic {
         Box::new(ActiveTraffic {
             composite: Composite::new(
                 Widget::col(vec![
-                    DashTab::ActiveTraffic.picker(ctx),
+                    DashTab::ActiveTraffic.picker(ctx, app),
                     LinePlot::new(ctx, "active agents", active_agents, PlotOptions::new()),
                 ])
                 .bg(app.cs.panel_bg)
                 .padding(10),
             )
-            .max_size_percent(90, 90)
+            .exact_size_percent(90, 90)
             .build(ctx),
         })
     }
@@ -55,8 +55,12 @@ impl State for ActiveTraffic {
         }
     }
 
+    fn draw_baselayer(&self) -> DrawBaselayer {
+        DrawBaselayer::Custom
+    }
+
     fn draw(&self, g: &mut GfxCtx, app: &App) {
-        State::grey_out_map(g, app);
+        g.clear(app.cs.grass);
         self.composite.draw(g);
     }
 }
@@ -78,7 +82,7 @@ impl BusRoutes {
         routes.sort();
 
         let mut col = vec![
-            DashTab::BusRoutes.picker(ctx),
+            DashTab::BusRoutes.picker(ctx, app),
             Line("Bus routes").small_heading().draw(ctx),
         ];
         for r in routes {
@@ -87,7 +91,7 @@ impl BusRoutes {
 
         Box::new(BusRoutes {
             composite: Composite::new(Widget::col(col).bg(app.cs.panel_bg).padding(10))
-                .max_size_percent(90, 90)
+                .exact_size_percent(90, 90)
                 .build(ctx),
         })
     }
@@ -125,8 +129,12 @@ impl State for BusRoutes {
         }
     }
 
+    fn draw_baselayer(&self) -> DrawBaselayer {
+        DrawBaselayer::Custom
+    }
+
     fn draw(&self, g: &mut GfxCtx, app: &App) {
-        State::grey_out_map(g, app);
+        g.clear(app.cs.grass);
         self.composite.draw(g);
     }
 }

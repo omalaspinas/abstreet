@@ -10,11 +10,11 @@ Grab a pre-built binary release -- updated every Sunday, announced at
 [r/abstreet](http://old.reddit.com/r/abstreet):
 
 - Windows:
-  https://github.com/dabreegster/abstreet/releases/download/v0.1.38/abstreet_windows_v0_1_38.zip
+  https://github.com/dabreegster/abstreet/releases/download/v0.1.42/abstreet_windows_v0_1_42.zip
 - Mac:
-  https://github.com/dabreegster/abstreet/releases/download/v0.1.38/abstreet_mac_v0_1_38.zip
+  https://github.com/dabreegster/abstreet/releases/download/v0.1.42/abstreet_mac_v0_1_42.zip
 - Linux:
-  https://github.com/dabreegster/abstreet/releases/download/v0.1.38/abstreet_linux_v0_1_38.zip
+  https://github.com/dabreegster/abstreet/releases/download/v0.1.42/abstreet_linux_v0_1_42.zip
 
 Unzip the folder, then run `play_abstreet.sh` or `play_abstreet.bat`. On
 Windows, you'll probably get a warning about running software from an unknown
@@ -24,9 +24,10 @@ Or you can [build from source](/docs/dev.md).
 
 ## Playing the game
 
-- Use the **tutorial** to learn the controls.
-- Play the **challenges** for directed gameplay. As of April 2020, these're
-  under active development.
+- Use the **tutorial** to learn the controls. As of May 2020, **some stages are
+  broken**. Will be fixed soon.
+- Play the **challenges** for directed gameplay. As of May 2020, these're under
+  active development.
 - Try out any ideas in the **sandbox**.
 
 ## Data source licensing

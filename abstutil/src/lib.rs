@@ -16,9 +16,9 @@ pub use crate::collections::{
 pub use crate::error::Error;
 pub use crate::io::{
     basename, deserialize_btreemap, deserialize_multimap, file_exists, find_next_file,
-    find_prev_file, list_all_objects, load_all_objects, maybe_read_binary, maybe_read_json,
-    read_binary, read_json, serialize_btreemap, serialize_multimap, serialized_size_bytes,
-    slurp_file, to_json, write_binary, write_json, FileWithProgress,
+    find_prev_file, list_all_objects, list_dir, load_all_objects, maybe_read_binary,
+    maybe_read_json, read_binary, read_json, serialize_btreemap, serialize_multimap,
+    serialized_size_bytes, slurp_file, to_json, write_binary, write_json, FileWithProgress,
 };
 pub use crate::logs::Warn;
 pub use crate::random::{fork_rng, WeightedUsizeChoice};
@@ -95,23 +95,6 @@ pub fn path_all_synthetic_maps() -> String {
 
 // Player data (Players edit this)
 
-pub fn path_ab_test(map_name: &str, test_name: &str) -> String {
-    format!("../data/player/ab_tests/{}/{}.json", map_name, test_name)
-}
-pub fn path_all_ab_tests(map_name: &str) -> String {
-    format!("../data/player/ab_tests/{}", map_name)
-}
-
-pub fn path_ab_test_save(map_name: &str, test_name: &str, time: String) -> String {
-    format!(
-        "../data/player/ab_test_saves/{}/{}/{}.bin",
-        map_name, test_name, time
-    )
-}
-pub fn path_all_ab_test_saves(map_name: &str, test_name: &str) -> String {
-    format!("../data/player/ab_test_saves/{}/{}", map_name, test_name)
-}
-
 pub fn path_camera_state(map_name: &str) -> String {
     format!("../data/player/camera_state/{}.json", map_name)
 }
@@ -136,39 +119,14 @@ pub fn path_all_saves(map_name: &str, edits_name: &str, run_name: &str) -> Strin
     )
 }
 
-pub fn path_shortcut(name: &str) -> String {
-    format!("../data/player/shortcuts/{}.json", name)
-}
-pub fn path_all_shortcuts() -> String {
-    format!("../data/player/shortcuts")
-}
-
 // Input data (For developers to build maps, not needed at runtime)
-
-pub fn path_fixes(name: &str) -> String {
-    format!("../data/input/fixes/{}.json", name)
-}
-
-pub fn path_neighborhood(map_name: &str, neighborhood: &str) -> String {
-    format!(
-        "../data/input/neighborhoods/{}/{}.json",
-        map_name, neighborhood
-    )
-}
-pub fn path_all_neighborhoods(map_name: &str) -> String {
-    format!("../data/input/neighborhoods/{}", map_name)
-}
 
 pub fn path_pending_screenshots(map_name: &str) -> String {
     format!("../data/input/screenshots/pending_{}", map_name)
 }
 
-pub fn path_polygon(polygon_name: &str) -> String {
-    format!("../data/input/polygons/{}.poly", polygon_name)
-}
-
 pub fn path_popdat() -> String {
-    format!("../data/input/popdat.bin")
+    format!("../data/input/seattle/popdat.bin")
 }
 
 pub fn path_raw_map(map_name: &str) -> String {

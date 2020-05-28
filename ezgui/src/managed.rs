@@ -195,7 +195,6 @@ impl Widget {
     }
 
     pub fn named<I: Into<String>>(mut self, id: I) -> Widget {
-        assert!(self.id.is_none());
         self.id = Some(id.into());
         self
     }
@@ -223,7 +222,12 @@ impl Widget {
     // TODO These are literally just convenient APIs to avoid importing JustDraw. Do we want this
     // or not?
     pub fn draw_batch(ctx: &EventCtx, batch: GeomBatch) -> Widget {
-        JustDraw::wrap(ctx, batch)
+        let scale = ctx.get_scale_factor();
+        if scale == 1.0 {
+            JustDraw::wrap(ctx, batch)
+        } else {
+            JustDraw::wrap(ctx, batch.scale(scale))
+        }
     }
     pub fn draw_svg<I: Into<String>>(ctx: &EventCtx, filename: I) -> Widget {
         JustDraw::svg(ctx, filename.into())
@@ -287,7 +291,13 @@ impl Widget {
     }
 
     // Populate a flattened list of Nodes, matching the traversal order
-    fn get_flexbox(&self, parent: Node, stretch: &mut Stretch, nodes: &mut Vec<Node>) {
+    fn get_flexbox(
+        &self,
+        parent: Node,
+        scale_factor: f32,
+        stretch: &mut Stretch,
+        nodes: &mut Vec<Node>,
+    ) {
         if let Some(container) = self.widget.downcast_ref::<Container>() {
             let mut style = self.layout.style.clone();
             style.flex_direction = if container.is_row {
@@ -298,7 +308,7 @@ impl Widget {
             let node = stretch.new_node(style, Vec::new()).unwrap();
             nodes.push(node);
             for widget in &container.members {
-                widget.get_flexbox(node, stretch, nodes);
+                widget.get_flexbox(node, scale_factor, stretch, nodes);
             }
             stretch.add_child(parent, node).unwrap();
             return;
@@ -308,6 +318,32 @@ impl Widget {
                 width: Dimension::Points(self.widget.get_dims().width as f32),
                 height: Dimension::Points(self.widget.get_dims().height as f32),
             };
+            if scale_factor != 1.0 {
+                if let Dimension::Points(ref mut px) = style.padding.start {
+                    *px *= scale_factor;
+                }
+                if let Dimension::Points(ref mut px) = style.padding.end {
+                    *px *= scale_factor;
+                }
+                if let Dimension::Points(ref mut px) = style.padding.top {
+                    *px *= scale_factor;
+                }
+                if let Dimension::Points(ref mut px) = style.padding.bottom {
+                    *px *= scale_factor;
+                }
+                if let Dimension::Points(ref mut px) = style.margin.start {
+                    *px *= scale_factor;
+                }
+                if let Dimension::Points(ref mut px) = style.margin.end {
+                    *px *= scale_factor;
+                }
+                if let Dimension::Points(ref mut px) = style.margin.top {
+                    *px *= scale_factor;
+                }
+                if let Dimension::Points(ref mut px) = style.margin.bottom {
+                    *px *= scale_factor;
+                }
+            }
             let node = stretch.new_node(style, Vec::new()).unwrap();
             stretch.add_child(parent, node).unwrap();
             nodes.push(node);
@@ -394,6 +430,21 @@ impl Widget {
         }
     }
 
+    fn currently_hovering(&self) -> Option<&String> {
+        if let Some(btn) = self.widget.downcast_ref::<Button>() {
+            if btn.hovering {
+                return Some(&btn.action);
+            }
+        } else if let Some(container) = self.widget.downcast_ref::<Container>() {
+            for w in &container.members {
+                if let Some(a) = w.currently_hovering() {
+                    return Some(a);
+                }
+            }
+        }
+        None
+    }
+
     fn restore(&mut self, ctx: &mut EventCtx, prev: &Composite) {
         if let Some(container) = self.widget.downcast_mut::<Container>() {
             for w in &mut container.members {
@@ -468,7 +519,6 @@ pub struct CompositeBuilder {
     horiz: HorizontalAlignment,
     vert: VerticalAlignment,
     dims: Dims,
-    allow_duplicate_buttons: bool,
 }
 
 pub struct Composite {
@@ -493,7 +543,6 @@ impl Composite {
             horiz: HorizontalAlignment::Center,
             vert: VerticalAlignment::Center,
             dims: Dims::MaxPercent(1.0, 1.0),
-            allow_duplicate_buttons: false,
         }
     }
 
@@ -509,7 +558,12 @@ impl Composite {
             .unwrap();
 
         let mut nodes = vec![];
-        self.top_level.get_flexbox(root, &mut stretch, &mut nodes);
+        self.top_level.get_flexbox(
+            root,
+            ctx.get_scale_factor() as f32,
+            &mut stretch,
+            &mut nodes,
+        );
         nodes.reverse();
 
         // TODO Express more simply. Constraining this seems useless.
@@ -804,6 +858,10 @@ impl Composite {
         // TODO No great way to populate OSD from here with "click to cancel"
         !self.top_level.rect.contains(ctx.canvas.get_cursor()) && ctx.normal_left_click()
     }
+
+    pub fn currently_hovering(&self) -> Option<&String> {
+        self.top_level.currently_hovering()
+    }
 }
 
 impl CompositeBuilder {
@@ -822,7 +880,9 @@ impl CompositeBuilder {
             clip_rect: None,
         };
         if let Dims::ExactPercent(w, h) = c.dims {
-            c.top_level.layout.style.size = Size {
+            // Don't set size, because then scrolling breaks -- the actual size has to be based on
+            // the contents.
+            c.top_level.layout.style.min_size = Size {
                 width: Dimension::Points((w * ctx.canvas.window_width) as f32),
                 height: Dimension::Points((h * ctx.canvas.window_height) as f32),
             };
@@ -877,10 +937,8 @@ impl CompositeBuilder {
             c.clip_rect = Some(ScreenRectangle::top_left(top_left, c.container_dims));
         }
 
-        if !self.allow_duplicate_buttons {
-            // Just trigger error if a button is double-defined
-            c.get_all_click_actions();
-        }
+        // Just trigger error if a button is double-defined
+        c.get_all_click_actions();
         // Let all widgets initially respond to the mouse being somewhere
         ctx.no_op_event(true, |ctx| assert!(c.event(ctx).is_none()));
         c
@@ -906,11 +964,6 @@ impl CompositeBuilder {
 
     pub fn exact_size_percent(mut self, pct_width: usize, pct_height: usize) -> CompositeBuilder {
         self.dims = Dims::ExactPercent((pct_width as f64) / 100.0, (pct_height as f64) / 100.0);
-        self
-    }
-
-    pub fn allow_duplicate_buttons(mut self) -> CompositeBuilder {
-        self.allow_duplicate_buttons = true;
         self
     }
 }

@@ -1,7 +1,7 @@
 use crate::world::{Object, ObjectID, World};
 use abstutil::Timer;
 use ezgui::{Color, Line, Prerender, Text};
-use geom::{Bounds, Circle, Distance, FindClosest, GPSBounds, PolyLine, Polygon, Pt2D};
+use geom::{ArrowCap, Bounds, Circle, Distance, FindClosest, GPSBounds, PolyLine, Polygon, Pt2D};
 use map_model::raw::{
     OriginalBuilding, OriginalIntersection, OriginalRoad, RawBuilding, RawIntersection, RawMap,
     RawRoad, RestrictionType, TurnRestriction,
@@ -31,7 +31,7 @@ pub struct Model {
 impl Model {
     pub fn blank() -> Model {
         Model {
-            map: RawMap::blank(String::new()),
+            map: RawMap::blank("", ""),
             showing_pts: None,
 
             include_bldgs: false,
@@ -44,7 +44,6 @@ impl Model {
         path: String,
         include_bldgs: bool,
         intersection_geom: bool,
-        mut no_fixes: bool,
         prerender: &Prerender,
     ) -> Model {
         let mut timer = Timer::new("import map");
@@ -55,13 +54,8 @@ impl Model {
         } else {
             // Synthetic map!
             model.map = abstutil::read_json(path, &mut timer);
-            no_fixes = true;
         }
         model.intersection_geom = intersection_geom;
-
-        if !no_fixes {
-            model.map.apply_all_fixes(&mut timer);
-        }
 
         if model.include_bldgs {
             for id in model.map.buildings.keys().cloned().collect::<Vec<_>>() {
@@ -126,15 +120,6 @@ impl Model {
         );
 
         abstutil::write_json(abstutil::path_synthetic_map(&self.map.name), &self.map);
-    }
-
-    pub fn save_fixes(&mut self) {
-        abstutil::write_json(
-            abstutil::path_fixes(&self.map.name),
-            &self
-                .map
-                .generate_fixes(&mut Timer::new("calculate MapFixes")),
-        );
     }
 
     fn compute_bounds(&self) -> Bounds {
@@ -393,6 +378,7 @@ impl Model {
                 ],
                 osm_tags,
                 turn_restrictions: Vec::new(),
+                complicated_turn_restrictions: Vec::new(),
             },
         );
         self.road_added(id, prerender);
@@ -446,76 +432,6 @@ impl Model {
         self.road_added(id, prerender);
     }
 
-    pub fn toggle_r_parking(&mut self, some_id: OriginalRoad, prerender: &Prerender) {
-        // Update every road belonging to the way.
-        let osm_id = self.map.roads[&some_id].osm_tags[osm::OSM_WAY_ID].clone();
-        let matching_roads = self
-            .map
-            .roads
-            .iter()
-            .filter_map(|(k, v)| {
-                if v.osm_tags[osm::OSM_WAY_ID] == osm_id {
-                    Some(*k)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // Verify every road has the same parking tags. Blockface hints might've applied to just
-        // some parts. If this is really true, then the way has to be split. Example is McGraw St.
-        let both = self.map.roads[&some_id]
-            .osm_tags
-            .get(osm::PARKING_BOTH)
-            .cloned();
-        let left = self.map.roads[&some_id]
-            .osm_tags
-            .get(osm::PARKING_LEFT)
-            .cloned();
-        let right = self.map.roads[&some_id]
-            .osm_tags
-            .get(osm::PARKING_RIGHT)
-            .cloned();
-        for r in &matching_roads {
-            let tags = &self.map.roads[r].osm_tags;
-            if tags.get(osm::PARKING_BOTH) != both.as_ref()
-                || tags.get(osm::PARKING_LEFT) != left.as_ref()
-                || tags.get(osm::PARKING_RIGHT) != right.as_ref()
-            {
-                println!(
-                    "WARNING: {} and {} belong to same way, but have different parking tags!",
-                    some_id, r
-                );
-            }
-        }
-
-        for id in matching_roads {
-            self.road_deleted(id);
-
-            let osm_tags = &mut self.map.roads.get_mut(&id).unwrap().osm_tags;
-            osm_tags.remove(osm::INFERRED_PARKING);
-            let yes = "parallel".to_string();
-            let no = "no_parking".to_string();
-            if both.as_ref() == Some(&yes) {
-                osm_tags.insert(osm::PARKING_BOTH.to_string(), no);
-            } else if both.as_ref() == Some(&no) {
-                osm_tags.remove(osm::PARKING_BOTH);
-                osm_tags.insert(osm::PARKING_LEFT.to_string(), yes);
-                osm_tags.insert(osm::PARKING_RIGHT.to_string(), no);
-            } else if left.as_ref() == Some(&yes) {
-                osm_tags.insert(osm::PARKING_LEFT.to_string(), no);
-                osm_tags.insert(osm::PARKING_RIGHT.to_string(), yes);
-            } else if right.as_ref() == Some(&yes) {
-                osm_tags.remove(osm::PARKING_LEFT);
-                osm_tags.remove(osm::PARKING_RIGHT);
-                osm_tags.insert(osm::PARKING_BOTH.to_string(), yes);
-            }
-
-            self.road_added(id, prerender);
-        }
-    }
-
-    // TODO Refactor with toggle_r_parking?
     pub fn toggle_r_sidewalks(&mut self, some_id: OriginalRoad, prerender: &Prerender) {
         // Update every road belonging to the way.
         let osm_id = self.map.roads[&some_id].osm_tags[osm::OSM_WAY_ID].clone();
@@ -541,7 +457,7 @@ impl Model {
         for r in &matching_roads {
             if self.map.roads[r].osm_tags.get(osm::SIDEWALK) != value.as_ref() {
                 println!(
-                    "WARNING: {} and {} belong to same way, but have different parking tags!",
+                    "WARNING: {} and {} belong to same way, but have different sidewalk tags!",
                     some_id, r
                 );
             }
@@ -581,8 +497,7 @@ impl Model {
         let r = &self.map.roads[&id];
         let unset =
             r.synthetic() && r.osm_tags.get(osm::NAME) == Some(&"Streety McStreetFace".to_string());
-        let lanes_unknown = r.osm_tags.contains_key(osm::INFERRED_PARKING)
-            || r.osm_tags.contains_key(osm::INFERRED_SIDEWALKS);
+        let lanes_unknown = r.osm_tags.contains_key(osm::INFERRED_SIDEWALKS);
         let spec = r.get_spec();
         let center_pts = PolyLine::new(r.center_points.clone());
 
@@ -645,7 +560,7 @@ impl Model {
                     continue;
                 }
                 PolyLine::new(vec![self.get_r_center(id), self.get_r_center(*to)])
-                    .make_arrow(NORMAL_LANE_THICKNESS)
+                    .make_arrow(NORMAL_LANE_THICKNESS, ArrowCap::Triangle)
                     .unwrap()
             };
 
@@ -795,35 +710,6 @@ impl Model {
         self.show_r_points(id, prerender);
     }
 
-    // TODO Need to show_r_points of the thing we wind up selecting after this.
-    pub fn merge_r(&mut self, id: OriginalRoad, prerender: &Prerender) {
-        if let Err(e) = self.map.can_merge_short_road(id) {
-            println!("Can't merge this road: {}", e);
-            return;
-        }
-
-        self.stop_showing_pts(id);
-
-        let (retained_i, deleted_i, deleted_roads, created_roads, deleted_trs) =
-            self.map.merge_short_road(id).unwrap();
-        for tr in deleted_trs {
-            self.world.delete(ID::TurnRestriction(tr));
-        }
-
-        self.world.delete(ID::Intersection(retained_i));
-        self.intersection_added(retained_i, prerender);
-
-        self.world.delete(ID::Intersection(deleted_i));
-
-        for r in deleted_roads {
-            // This is safe, can_merge_short_road checks for turn restrictions.
-            self.world.delete(ID::Road(r));
-        }
-        for r in created_roads {
-            self.road_added(r, prerender);
-        }
-    }
-
     pub fn get_r_center(&self, id: OriginalRoad) -> Pt2D {
         PolyLine::new(self.map.roads[&id].center_points.clone()).middle()
     }
@@ -877,7 +763,8 @@ impl Model {
             RawBuilding {
                 polygon: Polygon::rectangle_centered(center, BUILDING_LENGTH, BUILDING_LENGTH),
                 osm_tags: BTreeMap::new(),
-                parking: None,
+                public_garage_name: None,
+                num_parking_spots: 0,
                 amenities: BTreeSet::new(),
             },
         );

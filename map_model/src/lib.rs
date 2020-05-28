@@ -7,7 +7,6 @@ mod intersection;
 mod lane;
 mod make;
 mod map;
-mod neighborhood;
 pub mod osm;
 mod pathfind;
 pub mod raw;
@@ -20,12 +19,12 @@ mod turn;
 pub use crate::area::{Area, AreaID, AreaType};
 pub use crate::building::{Building, BuildingID, FrontPath, OffstreetParking};
 pub use crate::bus_stop::{BusRoute, BusRouteID, BusStop, BusStopID};
-pub use crate::edits::{EditCmd, EditEffects, EditIntersection, MapEdits};
+pub use crate::edits::{EditCmd, EditEffects, EditIntersection, MapEdits, PermanentMapEdits};
 pub use crate::intersection::{Intersection, IntersectionID, IntersectionType};
 pub use crate::lane::{Lane, LaneID, LaneType, PARKING_SPOT_LENGTH};
-pub use crate::make::RoadSpec;
+pub use crate::make::initial::lane_specs::RoadSpec;
 pub use crate::map::Map;
-pub use crate::neighborhood::{FullNeighborhoodInfo, Neighborhood, NeighborhoodBuilder};
+pub use crate::pathfind::uber_turns::{IntersectionCluster, UberTurn, UberTurnGroup};
 pub use crate::pathfind::{Path, PathConstraints, PathRequest, PathStep};
 pub use crate::road::{DirectedRoadID, Road, RoadID};
 pub use crate::stop_signs::{ControlStopSign, RoadWithStopSign};
@@ -44,6 +43,4 @@ impl Cloneable for ControlTrafficSignal {}
 impl Cloneable for IntersectionID {}
 impl Cloneable for LaneType {}
 impl Cloneable for MapEdits {}
-impl Cloneable for Neighborhood {}
-impl Cloneable for NeighborhoodBuilder {}
 impl Cloneable for raw::RestrictionType {}

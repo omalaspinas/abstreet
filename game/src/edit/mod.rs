@@ -1,7 +1,10 @@
+mod bulk;
+mod cluster_traffic_signals;
 mod lanes;
 mod stop_signs;
 mod traffic_signals;
 
+pub use self::cluster_traffic_signals::ClusterTrafficSignalEditor;
 pub use self::lanes::LaneEditor;
 pub use self::stop_signs::StopSignEditor;
 pub use self::traffic_signals::TrafficSignalEditor;
@@ -10,21 +13,21 @@ use crate::common::{tool_panel, Colorer, CommonState, Warping};
 use crate::debug::DebugMode;
 use crate::game::{msg, State, Transition, WizardState};
 use crate::helpers::ID;
-use crate::layer::Layers;
 use crate::managed::{WrappedComposite, WrappedOutcome};
-use crate::render::{DrawIntersection, DrawLane, DrawRoad, MIN_ZOOM_FOR_DETAIL};
+use crate::render::{DrawIntersection, DrawLane, DrawRoad};
 use crate::sandbox::{GameplayMode, SandboxMode};
 use abstutil::Timer;
 use ezgui::{
     hotkey, lctrl, Btn, Choice, Color, Composite, EventCtx, GeomBatch, GfxCtx, HorizontalAlignment,
-    Key, Line, Outcome, RewriteColor, ScreenRectangle, VerticalAlignment, Widget, WrappedWizard,
+    Key, Line, Outcome, RewriteColor, ScreenRectangle, TextExt, VerticalAlignment, Widget,
+    WrappedWizard,
 };
-use geom::Polygon;
+use geom::{Polygon, Speed};
 use map_model::{
     connectivity, EditCmd, EditIntersection, IntersectionID, LaneID, LaneType, MapEdits,
-    PathConstraints,
+    PathConstraints, PermanentMapEdits,
 };
-use sim::{DontDrawAgents, Sim};
+use sim::DontDrawAgents;
 use std::collections::BTreeSet;
 
 pub struct EditMode {
@@ -33,7 +36,6 @@ pub struct EditMode {
 
     // Retained state from the SandboxMode that spawned us
     mode: GameplayMode,
-    pub suspended_sim: Sim,
 
     // edits name, number of commands
     top_panel_key: (String, usize),
@@ -42,21 +44,24 @@ pub struct EditMode {
 
 impl EditMode {
     pub fn new(ctx: &mut EventCtx, app: &mut App, mode: GameplayMode) -> EditMode {
-        let suspended_sim = app.primary.clear_sim();
+        assert!(app.suspended_sim.is_none());
+        app.suspended_sim = Some(app.primary.clear_sim());
         let edits = app.primary.map.get_edits();
         EditMode {
             tool_panel: tool_panel(ctx, app),
             composite: make_topcenter(ctx, app),
             mode,
-            suspended_sim,
             top_panel_key: (edits.edits_name.clone(), edits.commands.len()),
             once: true,
         }
     }
 
     fn quit(&self, ctx: &mut EventCtx, app: &mut App) -> Transition {
+        assert!(app.suspended_sim.is_some());
+        app.suspended_sim = None;
+
         ctx.loading_screen("apply edits", |ctx, mut timer| {
-            app.layer = Layers::Inactive;
+            app.layer = None;
             app.primary
                 .map
                 .recalculate_pathfinding_after_edits(&mut timer);
@@ -73,12 +78,12 @@ impl EditMode {
 
 impl State for EditMode {
     fn event(&mut self, ctx: &mut EventCtx, app: &mut App) -> Transition {
-        // Can't do this in the constructor, because SandboxMode's on_destroy clears out Layers
+        // Can't do this in the constructor, because SandboxMode's on_destroy clears out the layer
         if self.once {
             // Once is never...
             self.once = false;
             // apply_map_edits will do the job later
-            app.layer = crate::layer::map::edits(ctx, app);
+            app.layer = Some(Box::new(crate::layer::map::Static::edits(ctx, app)));
         }
         {
             let edits = app.primary.map.get_edits();
@@ -98,6 +103,7 @@ impl State for EditMode {
                 &ShowEverything::new(),
                 false,
                 true,
+                false,
             );
             if let Some(ID::Lane(l)) = app.primary.current_selection {
                 if !can_edit_lane(&self.mode, l, app) {
@@ -122,9 +128,13 @@ impl State for EditMode {
                         app.primary.map.save_edits();
                     }
                     return Transition::Push(make_load_edits(
+                        app,
                         self.composite.rect_of("load edits").clone(),
                         self.mode.clone(),
                     ));
+                }
+                "bulk edit" => {
+                    return Transition::Push(bulk::PaintSelect::new(ctx, app));
                 }
                 "finish editing" => {
                     return self.quit(ctx, app);
@@ -140,13 +150,14 @@ impl State for EditMode {
                         // Autosave, then cut over to blank edits.
                         app.primary.map.save_edits();
                     }
-                    apply_map_edits(ctx, app, MapEdits::new(app.primary.map.get_name()));
+                    apply_map_edits(ctx, app, MapEdits::new());
                 }
                 "undo" => {
                     let mut edits = app.primary.map.get_edits().clone();
                     let id = match edits.commands.pop().unwrap() {
                         EditCmd::ChangeLaneType { id, .. } => ID::Lane(id),
                         EditCmd::ReverseLane { l, .. } => ID::Lane(l),
+                        EditCmd::ChangeSpeedLimit { id, .. } => ID::Road(id),
                         EditCmd::ChangeIntersection { i, .. } => ID::Intersection(i),
                     };
                     apply_map_edits(ctx, app, edits);
@@ -163,7 +174,7 @@ impl State for EditMode {
             None => {}
         }
 
-        if ctx.canvas.cam_zoom < MIN_ZOOM_FOR_DETAIL {
+        if ctx.canvas.cam_zoom < app.opts.min_zoom_for_detail {
             if let Some(id) = &app.primary.current_selection {
                 if app.per_obj.left_click(ctx, "edit this") {
                     return Transition::Push(Warping::new(
@@ -181,22 +192,12 @@ impl State for EditMode {
                     && self.mode.can_edit_stop_signs()
                     && app.per_obj.left_click(ctx, "edit stop signs")
                 {
-                    return Transition::Push(Box::new(StopSignEditor::new(
-                        id,
-                        ctx,
-                        app,
-                        self.suspended_sim.clone(),
-                    )));
+                    return Transition::Push(Box::new(StopSignEditor::new(id, ctx, app)));
                 }
                 if app.primary.map.maybe_get_traffic_signal(id).is_some()
                     && app.per_obj.left_click(ctx, "edit traffic signal")
                 {
-                    return Transition::Push(Box::new(TrafficSignalEditor::new(
-                        id,
-                        ctx,
-                        app,
-                        self.suspended_sim.clone(),
-                    )));
+                    return Transition::Push(Box::new(TrafficSignalEditor::new(id, ctx, app)));
                 }
                 if app.primary.map.get_i(id).is_closed()
                     && app.per_obj.left_click(ctx, "re-open closed intersection")
@@ -238,7 +239,9 @@ impl State for EditMode {
         // TODO Maybe this should be part of app.draw
         // TODO This has an X button, but we never call update and allow it to be changed. Should
         // just omit the button.
-        app.layer.draw(g);
+        if let Some(ref l) = app.layer {
+            l.draw(g, app);
+        }
 
         self.tool_panel.draw(g);
         self.composite.draw(g);
@@ -259,6 +262,7 @@ pub fn save_edits_as(wizard: &mut WrappedWizard, app: &mut App) -> Option<()> {
             "Name the new copy of these edits",
             Some(new_default_name.clone()),
             Box::new(|l| {
+                let l = l.trim().to_string();
                 if l.contains("/") || l == "untitled edits" || l == "" {
                     None
                 } else {
@@ -290,13 +294,15 @@ pub fn save_edits_as(wizard: &mut WrappedWizard, app: &mut App) -> Option<()> {
     Some(())
 }
 
-fn make_load_edits(btn: ScreenRectangle, mode: GameplayMode) -> Box<dyn State> {
+fn make_load_edits(app: &App, btn: ScreenRectangle, mode: GameplayMode) -> Box<dyn State> {
+    let current_edits_name = app.primary.map.get_edits().edits_name.clone();
+
+    // TODO Weird behavior: if we cancel out of this, the current edits remain blanked out. Woops?
+
     WizardState::new(Box::new(move |wiz, ctx, app| {
         let mut wizard = wiz.wrap(ctx);
 
-        if app.primary.map.get_edits().edits_name == "untitled edits"
-            && !app.primary.map.get_edits().commands.is_empty()
-        {
+        if app.primary.map.unsaved_edits() {
             let save = "save edits";
             let discard = "discard";
             if wizard
@@ -309,9 +315,9 @@ fn make_load_edits(btn: ScreenRectangle, mode: GameplayMode) -> Box<dyn State> {
             }
         }
 
-        // TODO Exclude current
-        let current_edits_name = app.primary.map.get_edits().edits_name.clone();
-        let map_name = app.primary.map.get_name();
+        // We need to clear out the current edits first, or from_permanent won't work.
+        apply_map_edits(wizard.ctx, app, MapEdits::new());
+
         let (_, new_edits) = wizard.choose_exact(
             (
                 HorizontalAlignment::Centered(btn.center().x),
@@ -320,17 +326,21 @@ fn make_load_edits(btn: ScreenRectangle, mode: GameplayMode) -> Box<dyn State> {
             None,
             || {
                 let mut list = Choice::from(
-                    abstutil::load_all_objects(abstutil::path_all_edits(&map_name))
-                        .into_iter()
-                        .filter(|(_, edits)| {
-                            mode.allows(edits) && edits.edits_name != current_edits_name
-                        })
-                        .collect(),
+                    abstutil::load_all_objects(abstutil::path_all_edits(
+                        app.primary.map.get_name(),
+                    ))
+                    .into_iter()
+                    .filter_map(|(path, perma)| {
+                        PermanentMapEdits::from_permanent(perma, &app.primary.map)
+                            .map(|edits| (path, edits))
+                            .ok()
+                    })
+                    .filter(|(_, edits)| {
+                        mode.allows(edits) && edits.edits_name != current_edits_name
+                    })
+                    .collect(),
                 );
-                list.push(Choice::new(
-                    "start over with blank edits",
-                    MapEdits::new(map_name),
-                ));
+                list.push(Choice::new("start over with blank edits", MapEdits::new()));
                 list
             },
         )?;
@@ -371,18 +381,22 @@ fn make_topcenter(ctx: &mut EventCtx, app: &App) -> Composite {
                     )
                 })
                 .margin(15),
+            ])
+            .centered(),
+            Widget::row(vec![
                 if !app.primary.map.get_edits().commands.is_empty() {
                     Btn::text_fg("reset edits").build_def(ctx, None)
                 } else {
                     Btn::text_fg("reset edits").inactive(ctx)
                 }
-                .margin(5),
-            ])
-            .centered(),
-            Btn::text_fg("finish editing")
-                .build_def(ctx, hotkey(Key::Escape))
-                .centered_horiz(),
+                .margin_right(15),
+                Btn::text_fg("bulk edit")
+                    .build_def(ctx, hotkey(Key::B))
+                    .margin_right(15),
+                Btn::text_bg1("finish editing").build_def(ctx, hotkey(Key::Escape)),
+            ]),
         ])
+        .padding(5)
         .bg(app.cs.panel_bg),
     )
     .aligned(HorizontalAlignment::Center, VerticalAlignment::Top)
@@ -435,8 +449,8 @@ pub fn apply_map_edits(ctx: &mut EventCtx, app: &mut App, edits: MapEdits) {
         );
     }
 
-    if let Layers::Edits(_) = app.layer {
-        app.layer = crate::layer::map::edits(ctx, app);
+    if app.layer.as_ref().and_then(|l| l.name()) == Some("map edits") {
+        app.layer = Some(Box::new(crate::layer::map::Static::edits(ctx, app)));
     }
 }
 
@@ -494,4 +508,74 @@ pub fn close_intersection(
     } else {
         Transition::Replace(err_state)
     }
+}
+
+#[allow(unused)]
+pub fn check_parking_blackholes(
+    ctx: &mut EventCtx,
+    app: &mut App,
+    edits: MapEdits,
+) -> Option<Box<dyn State>> {
+    let orig_edits = app.primary.map.get_edits().clone();
+    let mut ok_originally = BTreeSet::new();
+    for l in app.primary.map.all_lanes() {
+        if l.parking_blackhole.is_none() {
+            ok_originally.insert(l.id);
+            // TODO Only matters if there's any parking here anyways
+        }
+    }
+
+    apply_map_edits(ctx, app, edits);
+    let color = Color::RED;
+    let mut num_problems = 0;
+    let mut c = Colorer::discrete(ctx, "", Vec::new(), vec![("parking disconnected", color)]);
+    for (l, _) in
+        connectivity::redirect_parking_blackholes(&app.primary.map, &mut Timer::throwaway())
+    {
+        if ok_originally.contains(&l) {
+            num_problems += 1;
+            c.add_l(l, color, &app.primary.map);
+        }
+    }
+    if num_problems == 0 {
+        None
+    } else {
+        apply_map_edits(ctx, app, orig_edits);
+        let mut err_state = msg(
+            "Error",
+            vec![format!("{} lanes have parking disconnected", num_problems)],
+        );
+        err_state.downcast_mut::<WizardState>().unwrap().also_draw = Some(c.build_zoomed(ctx, app));
+        Some(err_state)
+    }
+}
+
+pub fn change_speed_limit(ctx: &mut EventCtx, default: Speed) -> Widget {
+    Widget::row(vec![
+        "Change speed limit:"
+            .draw_text(ctx)
+            .centered_vert()
+            .margin_right(5),
+        Widget::dropdown(
+            ctx,
+            "speed limit",
+            default,
+            vec![
+                Choice::new("10 mph", Speed::miles_per_hour(10.0)),
+                Choice::new("15 mph", Speed::miles_per_hour(15.0)),
+                Choice::new("20 mph", Speed::miles_per_hour(20.0)),
+                Choice::new("25 mph", Speed::miles_per_hour(25.0)),
+                Choice::new("30 mph", Speed::miles_per_hour(30.0)),
+                Choice::new("35 mph", Speed::miles_per_hour(35.0)),
+                Choice::new("40 mph", Speed::miles_per_hour(40.0)),
+                Choice::new("45 mph", Speed::miles_per_hour(45.0)),
+                Choice::new("50 mph", Speed::miles_per_hour(50.0)),
+                Choice::new("55 mph", Speed::miles_per_hour(55.0)),
+                Choice::new("60 mph", Speed::miles_per_hour(60.0)),
+                Choice::new("65 mph", Speed::miles_per_hour(65.0)),
+                Choice::new("70 mph", Speed::miles_per_hour(70.0)),
+                // Don't need anything higher. Though now I kind of miss 3am drives on TX-71...
+            ],
+        ),
+    ])
 }

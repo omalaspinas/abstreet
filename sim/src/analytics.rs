@@ -1,17 +1,20 @@
 use crate::{AlertLocation, CarID, Event, ParkingSpot, TripID, TripMode, TripPhaseType};
 use abstutil::Counter;
-use derivative::Derivative;
-use geom::{Distance, Duration, Histogram, Time};
+use geom::{Distance, Duration, Histogram, Statistic, Time};
 use map_model::{
     BusRouteID, BusStopID, IntersectionID, LaneID, Map, Path, PathRequest, RoadID, Traversable,
     TurnGroupID,
 };
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
-#[derive(Clone, Serialize, Deserialize, Derivative)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Analytics {
-    pub thruput_stats: ThruputStats,
+    pub road_thruput: TimeSeriesCount<RoadID>,
+    pub intersection_thruput: TimeSeriesCount<IntersectionID>,
+
+    // Unlike everything else in Analytics, this is just for a moment in time.
+    pub demand: BTreeMap<TurnGroupID, usize>,
     #[serde(skip_serializing, skip_deserializing)]
     pub(crate) test_expectations: VecDeque<Event>,
     pub bus_arrivals: Vec<(Time, CarID, BusRouteID, BusStopID)>,
@@ -24,7 +27,7 @@ pub struct Analytics {
     pub trip_log: Vec<(Time, TripID, Option<PathRequest>, TripPhaseType)>,
     pub intersection_delays: BTreeMap<IntersectionID, Vec<(Time, Duration)>>,
     // Per parking lane, when does a spot become filled (true) or free (false)
-    parking_spot_changes: BTreeMap<LaneID, Vec<(Time, bool)>>,
+    pub parking_spot_changes: BTreeMap<LaneID, Vec<(Time, bool)>>,
     pub(crate) alerts: Vec<(Time, AlertLocation, String)>,
 
     // After we restore from a savestate, don't record anything. This is only going to make sense
@@ -33,30 +36,12 @@ pub struct Analytics {
     record_anything: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize, Derivative)]
-pub struct ThruputStats {
-    #[serde(skip_serializing, skip_deserializing)]
-    pub count_per_road: Counter<RoadID>,
-    #[serde(skip_serializing, skip_deserializing)]
-    pub count_per_intersection: Counter<IntersectionID>,
-
-    pub raw_per_road: Vec<(Time, TripMode, RoadID)>,
-    raw_per_intersection: Vec<(Time, TripMode, IntersectionID)>,
-
-    // Unlike everything else in Analytics, this is just for a moment in time.
-    pub demand: BTreeMap<TurnGroupID, usize>,
-}
-
 impl Analytics {
     pub fn new() -> Analytics {
         Analytics {
-            thruput_stats: ThruputStats {
-                count_per_road: Counter::new(),
-                count_per_intersection: Counter::new(),
-                raw_per_road: Vec::new(),
-                raw_per_intersection: Vec::new(),
-                demand: BTreeMap::new(),
-            },
+            road_thruput: TimeSeriesCount::new(),
+            intersection_thruput: TimeSeriesCount::new(),
+            demand: BTreeMap::new(),
             test_expectations: VecDeque::new(),
             bus_arrivals: Vec::new(),
             bus_passengers_waiting: Vec::new(),
@@ -75,33 +60,27 @@ impl Analytics {
             return;
         }
 
-        // TODO Plumb a flag
-        let raw_thruput = true;
-
         // Throughput
         if let Event::AgentEntersTraversable(a, to) = ev {
             let mode = TripMode::from_agent(a);
             match to {
                 Traversable::Lane(l) => {
-                    let r = map.get_l(l).parent;
-                    self.thruput_stats.count_per_road.inc(r);
-                    if raw_thruput {
-                        self.thruput_stats.raw_per_road.push((time, mode, r));
-                    }
+                    self.road_thruput.record(time, map.get_l(l).parent, mode);
                 }
                 Traversable::Turn(t) => {
-                    self.thruput_stats.count_per_intersection.inc(t.parent);
-                    if raw_thruput {
-                        self.thruput_stats
-                            .raw_per_intersection
-                            .push((time, mode, t.parent));
-                    }
+                    self.intersection_thruput.record(time, t.parent, mode);
 
                     if let Some(id) = map.get_turn_group(t) {
-                        *self.thruput_stats.demand.entry(id).or_insert(0) -= 1;
+                        *self.demand.entry(id).or_insert(0) -= 1;
                     }
                 }
             };
+        }
+        match ev {
+            Event::PersonLeavesMap(_, mode, i, _) | Event::PersonEntersMap(_, mode, i, _) => {
+                self.intersection_thruput.record(time, i, mode);
+            }
+            _ => {}
         }
 
         // Test expectations
@@ -194,7 +173,7 @@ impl Analytics {
         for step in path.get_steps() {
             if let Traversable::Turn(t) = step.as_traversable() {
                 if let Some(id) = map.get_turn_group(t) {
-                    *self.thruput_stats.demand.entry(id).or_insert(0) += 1;
+                    *self.demand.entry(id).or_insert(0) += 1;
                 }
             }
         }
@@ -354,73 +333,6 @@ impl Analytics {
             .collect()
     }
 
-    // Slightly misleading -- TripMode::Transit means buses, not pedestrians taking transit
-    pub fn throughput_road(
-        &self,
-        now: Time,
-        road: RoadID,
-        window_size: Duration,
-    ) -> BTreeMap<TripMode, Vec<(Time, usize)>> {
-        self.throughput(now, road, window_size, &self.thruput_stats.raw_per_road)
-    }
-
-    pub fn throughput_intersection(
-        &self,
-        now: Time,
-        intersection: IntersectionID,
-        window_size: Duration,
-    ) -> BTreeMap<TripMode, Vec<(Time, usize)>> {
-        self.throughput(
-            now,
-            intersection,
-            window_size,
-            &self.thruput_stats.raw_per_intersection,
-        )
-    }
-
-    fn throughput<X: PartialEq>(
-        &self,
-        now: Time,
-        obj: X,
-        window_size: Duration,
-        data: &Vec<(Time, TripMode, X)>,
-    ) -> BTreeMap<TripMode, Vec<(Time, usize)>> {
-        let mut pts_per_mode: BTreeMap<TripMode, Vec<(Time, usize)>> = BTreeMap::new();
-        let mut windows_per_mode: BTreeMap<TripMode, Window> = BTreeMap::new();
-        for mode in TripMode::all() {
-            pts_per_mode.insert(mode, vec![(Time::START_OF_DAY, 0)]);
-            windows_per_mode.insert(mode, Window::new(window_size));
-        }
-
-        for (t, m, x) in data {
-            if *x != obj {
-                continue;
-            }
-            if *t > now {
-                break;
-            }
-
-            let count = windows_per_mode.get_mut(m).unwrap().add(*t);
-            pts_per_mode.get_mut(m).unwrap().push((*t, count));
-        }
-
-        for (m, pts) in pts_per_mode.iter_mut() {
-            let mut window = windows_per_mode.remove(m).unwrap();
-
-            // Add a drop-off after window_size (+ a little epsilon!)
-            let t = (pts.last().unwrap().0 + window_size + Duration::seconds(0.1)).min(now);
-            if pts.last().unwrap().0 != t {
-                pts.push((t, window.count(t)));
-            }
-
-            if pts.last().unwrap().0 != now {
-                pts.push((now, window.count(now)));
-            }
-        }
-
-        pts_per_mode
-    }
-
     pub fn get_trip_phases(&self, trip: TripID, map: &Map) -> Vec<TripPhase> {
         let mut phases: Vec<TripPhase> = Vec::new();
         for (t, id, maybe_req, phase_type) in &self.trip_log {
@@ -437,18 +349,21 @@ impl Analytics {
                 start_time: *t,
                 end_time: None,
                 // Unwrap should be safe, because this is the request that was actually done...
-                path: maybe_req
-                    .as_ref()
-                    .map(|req| (req.start.dist_along(), map.pathfind(req.clone()).unwrap())),
+                // TODO Not if this is prebaked data and we've made edits. Woops.
+                path: maybe_req.as_ref().and_then(|req| {
+                    map.pathfind(req.clone())
+                        .map(|path| (req.start.dist_along(), path))
+                }),
+                has_path_req: maybe_req.is_some(),
                 phase_type: *phase_type,
             })
         }
         phases
     }
 
-    fn get_all_trip_phases(&self) -> BTreeMap<TripID, Vec<TripPhase>> {
+    pub fn get_all_trip_phases(&self) -> BTreeMap<TripID, Vec<TripPhase>> {
         let mut trips = BTreeMap::new();
-        for (t, id, _, phase_type) in &self.trip_log {
+        for (t, id, maybe_req, phase_type) in &self.trip_log {
             let phases: &mut Vec<TripPhase> = trips.entry(*id).or_insert_with(Vec::new);
             if let Some(ref mut last) = phases.last_mut() {
                 last.end_time = Some(*t);
@@ -466,77 +381,24 @@ impl Analytics {
                 end_time: None,
                 // Don't compute any paths
                 path: None,
+                has_path_req: maybe_req.is_some(),
                 phase_type: *phase_type,
             })
         }
         trips
     }
 
-    // TODO Unused now
-    pub fn analyze_parking_phases(&self) -> Vec<String> {
-        // Of all completed trips involving parking, what percentage of total time was spent as
-        // "overhead" -- not the main driving part of the trip?
-        // TODO This is misleading for border trips -- the driving lasts longer.
-        let mut distrib: Histogram<u16> = Histogram::new();
-        for (_, phases) in self.get_all_trip_phases() {
-            if phases.last().as_ref().unwrap().end_time.is_none() {
-                continue;
+    // TODO Unused right now!
+    pub fn intersection_delays_all_day(&self, stat: Statistic) -> Vec<(IntersectionID, Duration)> {
+        let mut results = Vec::new();
+        for (i, delays) in &self.intersection_delays {
+            let mut hgram = Histogram::new();
+            for (_, dt) in delays {
+                hgram.add(*dt);
             }
-            let mut driving_time = Duration::ZERO;
-            let mut overhead = Duration::ZERO;
-            for p in phases {
-                let dt = p.end_time.unwrap() - p.start_time;
-                match p.phase_type {
-                    TripPhaseType::Driving => {
-                        driving_time += dt;
-                    }
-                    TripPhaseType::Parking | TripPhaseType::Walking => {
-                        overhead += dt;
-                    }
-                    _ => {}
-                }
-            }
-            // Only interested in trips with both
-            if driving_time == Duration::ZERO || overhead == Duration::ZERO {
-                continue;
-            }
-            let pct = (overhead / (driving_time + overhead) * 100.0) as u16;
-            distrib.add(pct);
+            results.push((*i, hgram.select(stat)));
         }
-        vec![
-            format!("Consider all trips with both a walking and driving portion"),
-            format!(
-                "The portion of the trip spent walking to the parked car, looking for parking, \
-                 and walking from the parking space to the final destination are all overhead."
-            ),
-            format!(
-                "So what's the distribution of overhead percentages look like? 0% is ideal -- the \
-                 entire trip is spent just driving between the original source and destination."
-            ),
-            distrib.describe(),
-        ]
-    }
-
-    pub fn intersection_delays(
-        &self,
-        i: IntersectionID,
-        t1: Time,
-        t2: Time,
-    ) -> Histogram<Duration> {
-        let mut delays = Histogram::new();
-        // TODO Binary search
-        if let Some(list) = self.intersection_delays.get(&i) {
-            for (t, dt) in list {
-                if *t < t1 {
-                    continue;
-                }
-                if *t > t2 {
-                    break;
-                }
-                delays.add(*dt);
-            }
-        }
-        delays
+        results
     }
 
     pub fn intersection_delays_bucketized(
@@ -664,33 +526,68 @@ pub struct TripPhase {
     pub end_time: Option<Time>,
     // Plumb along start distance
     pub path: Option<(Distance, Path)>,
+    pub has_path_req: bool,
     pub phase_type: TripPhaseType,
 }
 
-struct Window {
-    times: VecDeque<Time>,
-    window_size: Duration,
+// Slightly misleading -- TripMode::Transit means buses, not pedestrians taking transit
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TimeSeriesCount<X: Ord + Clone> {
+    // (Road or intersection, mode, hour block) -> count for that hour
+    pub counts: BTreeMap<(X, TripMode, usize), usize>,
 }
 
-impl Window {
-    fn new(window_size: Duration) -> Window {
-        Window {
-            times: VecDeque::new(),
-            window_size,
+impl<X: Ord + Clone> TimeSeriesCount<X> {
+    fn new() -> TimeSeriesCount<X> {
+        TimeSeriesCount {
+            counts: BTreeMap::new(),
         }
     }
 
-    // Returns the count at time
-    fn add(&mut self, time: Time) -> usize {
-        self.times.push_back(time);
-        self.count(time)
+    fn record(&mut self, time: Time, id: X, mode: TripMode) {
+        let hour = time.get_parts().0;
+        *self.counts.entry((id, mode, hour)).or_insert(0) += 1;
     }
 
-    // Grab the count at this time, but don't add a new time
-    fn count(&mut self, end: Time) -> usize {
-        while !self.times.is_empty() && end - *self.times.front().unwrap() > self.window_size {
-            self.times.pop_front();
+    pub fn total_for(&self, id: X) -> usize {
+        let mut cnt = 0;
+        for mode in TripMode::all() {
+            // TODO Hmm
+            for hour in 0..24 {
+                cnt += self
+                    .counts
+                    .get(&(id.clone(), mode, hour))
+                    .cloned()
+                    .unwrap_or(0);
+            }
         }
-        self.times.len()
+        cnt
+    }
+
+    pub fn all_total_counts(&self) -> Counter<X> {
+        let mut cnt = Counter::new();
+        for ((id, _, _), value) in &self.counts {
+            cnt.add(id.clone(), *value);
+        }
+        cnt
+    }
+
+    pub fn count_per_hour(&self, id: X) -> Vec<(TripMode, Vec<(Time, usize)>)> {
+        let mut results = Vec::new();
+        for mode in TripMode::all() {
+            let mut pts = Vec::new();
+            // TODO Hmm
+            for hour in 0..24 {
+                let cnt = self
+                    .counts
+                    .get(&(id.clone(), mode, hour))
+                    .cloned()
+                    .unwrap_or(0);
+                pts.push((Time::START_OF_DAY + Duration::hours(hour), cnt));
+                pts.push((Time::START_OF_DAY + Duration::hours(hour + 1), cnt));
+            }
+            results.push((mode, pts));
+        }
+        results
     }
 }

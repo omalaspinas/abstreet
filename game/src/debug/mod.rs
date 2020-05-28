@@ -14,8 +14,8 @@ use ezgui::{
     GfxCtx, HorizontalAlignment, Key, Line, Outcome, Text, VerticalAlignment, Widget, Wizard,
 };
 use geom::{Duration, Pt2D};
-use map_model::{IntersectionID, NORMAL_LANE_THICKNESS};
-use sim::{Sim, TripID};
+use map_model::NORMAL_LANE_THICKNESS;
+use sim::{AgentID, Sim, TripID};
 use std::collections::HashSet;
 
 pub struct DebugMode {
@@ -28,7 +28,7 @@ pub struct DebugMode {
     search_results: Option<SearchResults>,
     all_routes: Option<(usize, Drawable)>,
 
-    highlighted_agents: Option<(IntersectionID, Drawable)>,
+    highlighted_agents: Option<(ID, Drawable)>,
 }
 
 impl DebugMode {
@@ -43,13 +43,14 @@ impl DebugMode {
                             .align_right(),
                     ]),
                     Text::new().draw(ctx).named("current info"),
-                    Checkbox::text(ctx, "show buildings", hotkey(Key::Num1), true),
-                    Checkbox::text(ctx, "show intersections", hotkey(Key::Num2), true),
-                    Checkbox::text(ctx, "show lanes", hotkey(Key::Num3), true),
-                    Checkbox::text(ctx, "show areas", hotkey(Key::Num4), true),
-                    Checkbox::text(ctx, "show extra shapes", hotkey(Key::Num5), true),
-                    Checkbox::text(ctx, "show labels", hotkey(Key::Num6), false),
-                    Checkbox::text(ctx, "show route for all agents", hotkey(Key::R), false),
+                    Checkbox::text(ctx, "show buildings", hotkey(Key::Num1), true).margin_below(5),
+                    Checkbox::text(ctx, "show intersections", hotkey(Key::Num2), true)
+                        .margin_below(5),
+                    Checkbox::text(ctx, "show lanes", hotkey(Key::Num3), true).margin_below(5),
+                    Checkbox::text(ctx, "show areas", hotkey(Key::Num4), true).margin_below(5),
+                    Checkbox::text(ctx, "show labels", hotkey(Key::Num5), false).margin_below(5),
+                    Checkbox::text(ctx, "show route for all agents", hotkey(Key::R), false)
+                        .margin_below(5),
                     Widget::col(
                         vec![
                             (lctrl(Key::H), "unhide everything"),
@@ -62,7 +63,9 @@ impl DebugMode {
                             (None, "pick a savestate to load"),
                         ]
                         .into_iter()
-                        .map(|(key, action)| Btn::text_fg(action).build_def(ctx, key))
+                        .map(|(key, action)| {
+                            Btn::text_fg(action).build_def(ctx, key).margin_below(5)
+                        })
                         .collect(),
                     ),
                 ])
@@ -110,7 +113,7 @@ impl State for DebugMode {
 
         if ctx.redo_mouseover() {
             app.primary.current_selection =
-                app.calculate_current_selection(ctx, &app.primary.sim, self, true, false);
+                app.calculate_current_selection(ctx, &app.primary.sim, self, true, false, false);
         }
 
         match self.composite.event(ctx) {
@@ -179,8 +182,14 @@ impl State for DebugMode {
                 }
                 "unhide everything" => {
                     self.hidden.clear();
-                    app.primary.current_selection =
-                        app.calculate_current_selection(ctx, &app.primary.sim, self, true, false);
+                    app.primary.current_selection = app.calculate_current_selection(
+                        ctx,
+                        &app.primary.sim,
+                        self,
+                        true,
+                        false,
+                        false,
+                    );
                     self.reset_info(ctx);
                 }
                 "search OSM metadata" => {
@@ -209,7 +218,6 @@ impl State for DebugMode {
         self.layers.show_intersections = self.composite.is_checked("show intersections");
         self.layers.show_lanes = self.composite.is_checked("show lanes");
         self.layers.show_areas = self.composite.is_checked("show areas");
-        self.layers.show_extra_shapes = self.composite.is_checked("show extra shapes");
         self.layers.show_labels = self.composite.is_checked("show labels");
         if self.composite.is_checked("show route for all agents") {
             if self.all_routes.is_none() {
@@ -223,33 +231,42 @@ impl State for DebugMode {
             }
         }
 
-        if let Some(ID::Intersection(id)) = app.primary.current_selection {
-            if self
-                .highlighted_agents
-                .as_ref()
-                .map(|(i, _)| id != *i)
-                .unwrap_or(true)
-            {
-                let mut batch = GeomBatch::new();
-                for a in app.primary.sim.get_accepted_agents(id) {
-                    batch.push(
-                        Color::PURPLE,
-                        app.primary
-                            .draw_map
-                            .get_obj(
-                                ID::from_agent(a),
-                                app,
-                                &mut app.primary.draw_map.agents.borrow_mut(),
-                                ctx.prerender,
-                            )
-                            .unwrap()
-                            .get_outline(&app.primary.map),
-                    );
+        match app.primary.current_selection {
+            Some(ID::Intersection(_)) | Some(ID::Car(_)) => {
+                let id = app.primary.current_selection.clone().unwrap();
+                if self
+                    .highlighted_agents
+                    .as_ref()
+                    .map(|(x, _)| *x != id)
+                    .unwrap_or(true)
+                {
+                    let mut batch = GeomBatch::new();
+                    let agents = match id {
+                        ID::Intersection(i) => app.primary.sim.get_accepted_agents(i),
+                        ID::Car(c) => app.primary.sim.get_blocked_by(AgentID::Car(c)),
+                        _ => unreachable!(),
+                    };
+                    for a in agents {
+                        batch.push(
+                            Color::PURPLE,
+                            app.primary
+                                .draw_map
+                                .get_obj(
+                                    ID::from_agent(a),
+                                    app,
+                                    &mut app.primary.draw_map.agents.borrow_mut(),
+                                    ctx.prerender,
+                                )
+                                .unwrap()
+                                .get_outline(&app.primary.map),
+                        );
+                    }
+                    self.highlighted_agents = Some((id, ctx.upload(batch)));
                 }
-                self.highlighted_agents = Some((id, ctx.upload(batch)));
             }
-        } else {
-            self.highlighted_agents = None;
+            _ => {
+                self.highlighted_agents = None;
+            }
         }
 
         self.objects.event(ctx);
@@ -307,7 +324,6 @@ impl ShowObject for DebugMode {
             ID::Road(_) | ID::Lane(_) => self.layers.show_lanes,
             ID::Building(_) => self.layers.show_buildings,
             ID::Intersection(_) => self.layers.show_intersections,
-            ID::ExtraShape(_) => self.layers.show_extra_shapes,
             ID::Area(_) => self.layers.show_areas,
             _ => true,
         }
@@ -333,18 +349,6 @@ fn search_osm(wiz: &mut Wizard, ctx: &mut EventCtx, app: &mut App) -> Option<Tra
         {
             num_matches += 1;
             batch.push(color, r.get_thick_polygon(map).unwrap());
-        }
-    }
-    for b in map.all_buildings() {
-        if b.osm_tags
-            .iter()
-            .any(|(k, v)| format!("{} = {}", k, v).contains(&filter))
-            || b.amenities
-                .iter()
-                .any(|(n, a)| n.contains(&filter) || a.contains(&filter))
-        {
-            num_matches += 1;
-            batch.push(color, b.polygon.clone());
         }
     }
     for a in map.all_areas() {
@@ -439,9 +443,6 @@ impl ContextualActions for Actions {
                 actions.push((Key::X, "debug intersection geometry".to_string()));
                 actions.push((Key::F2, "debug sidewalk corners".to_string()));
             }
-            ID::ExtraShape(_) => {
-                actions.push((Key::H, "hide this".to_string()));
-            }
             ID::Car(_) => {
                 actions.push((Key::Backspace, "forcibly kill this car".to_string()));
                 actions.push((Key::G, "find front of blockage".to_string()));
@@ -473,12 +474,7 @@ impl ContextualActions for Actions {
             })),
             (id, "debug") => {
                 *close_info = false;
-                objects::ObjectDebugger::dump_debug(
-                    id,
-                    &app.primary.map,
-                    &app.primary.sim,
-                    &app.primary.draw_map,
-                );
+                objects::ObjectDebugger::dump_debug(id, &app.primary.map, &app.primary.sim);
                 Transition::Keep
             }
             (ID::Car(c), "forcibly kill this car") => {

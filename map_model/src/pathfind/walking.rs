@@ -5,7 +5,7 @@ use crate::{
 };
 use fast_paths::{deserialize_32, serialize_32, FastGraph, InputGraph, PathCalculator};
 use geom::{Distance, Speed};
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use thread_local::ThreadLocal;
 
@@ -285,5 +285,5 @@ fn make_input_graph(
 fn to_s(dist: Distance) -> usize {
     let walking_speed = Speed::meters_per_second(1.34);
     let time = dist / walking_speed;
-    time.inner_seconds().round() as usize
+    (time.inner_seconds().round() as usize).max(1)
 }

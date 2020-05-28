@@ -1,8 +1,8 @@
 use crate::{
     AgentID, AlertLocation, CarID, Command, CreateCar, CreatePedestrian, DrivingGoal, Event,
-    OffMapLocation, ParkedCar, ParkingSimState, ParkingSpot, PedestrianID, PersonID, Scheduler,
-    SidewalkPOI, SidewalkSpot, TransitSimState, TripID, TripPhaseType, TripSpec, Vehicle,
-    VehicleSpec, VehicleType, WalkingSimState,
+    OffMapLocation, OrigPersonID, ParkedCar, ParkingSimState, ParkingSpot, PedestrianID, PersonID,
+    Scheduler, SidewalkPOI, SidewalkSpot, TransitSimState, TripID, TripPhaseType, TripSpec,
+    Vehicle, VehicleSpec, VehicleType, WalkingSimState,
 };
 use abstutil::{deserialize_btreemap, serialize_btreemap, Counter};
 use geom::{Distance, Duration, Speed, Time};
@@ -10,7 +10,7 @@ use map_model::{
     BuildingID, BusRouteID, BusStopID, IntersectionID, Map, Path, PathConstraints, PathRequest,
     Position,
 };
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
@@ -43,7 +43,13 @@ impl TripManager {
     }
 
     // TODO assert the specs are correct yo
-    pub fn new_person(&mut self, id: PersonID, ped_speed: Speed, vehicle_specs: Vec<VehicleSpec>) {
+    pub fn new_person(
+        &mut self,
+        id: PersonID,
+        orig_id: Option<OrigPersonID>,
+        ped_speed: Speed,
+        vehicle_specs: Vec<VehicleSpec>,
+    ) {
         assert_eq!(id.0, self.people.len());
         let vehicles = vehicle_specs
             .into_iter()
@@ -54,6 +60,7 @@ impl TripManager {
             .collect();
         self.people.push(Person {
             id,
+            orig_id,
             trips: Vec::new(),
             // The first new_trip will set this properly.
             state: PersonState::OffMap,
@@ -65,7 +72,7 @@ impl TripManager {
     }
     pub fn random_person(&mut self, ped_speed: Speed, vehicle_specs: Vec<VehicleSpec>) -> &Person {
         let id = PersonID(self.people.len());
-        self.new_person(id, ped_speed, vehicle_specs);
+        self.new_person(id, None, ped_speed, vehicle_specs);
         self.get_person(id).unwrap()
     }
 
@@ -552,8 +559,12 @@ impl TripManager {
         });
         let person = trip.person;
         if let TripEndpoint::Border(_, ref loc) = trip.end {
-            self.events
-                .push(Event::PersonLeavesMap(person, i, loc.clone()));
+            self.events.push(Event::PersonLeavesMap(
+                person,
+                TripMode::Walk,
+                i,
+                loc.clone(),
+            ));
         }
         self.people[person.0].state = PersonState::OffMap;
         self.person_finished_trip(now, person, parking, scheduler, map);
@@ -592,8 +603,12 @@ impl TripManager {
         let person = trip.person;
         self.people[person.0].state = PersonState::OffMap;
         if let TripEndpoint::Border(_, ref loc) = trip.end {
-            self.events
-                .push(Event::PersonLeavesMap(person, i, loc.clone()));
+            self.events.push(Event::PersonLeavesMap(
+                person,
+                TripMode::from_agent(AgentID::Car(car)),
+                i,
+                loc.clone(),
+            ));
         }
         self.person_finished_trip(now, person, parking, scheduler, map);
     }
@@ -654,7 +669,7 @@ impl TripManager {
             }
             TripEndpoint::Border(i, ref loc) => {
                 self.events
-                    .push(Event::PersonLeavesMap(person, i, loc.clone()));
+                    .push(Event::PersonLeavesMap(person, trip.mode, i, loc.clone()));
             }
         }
 
@@ -669,12 +684,14 @@ impl TripManager {
                 if let TripEndpoint::Bldg(b) = trip.end {
                     let driving_lane = map.find_driving_lane_near_building(b);
                     if let Some(spot) = parking
-                        .get_first_free_spot(
+                        .get_all_free_spots(
                             Position::new(driving_lane, Distance::ZERO),
                             &vehicle,
                             map,
                         )
-                        .map(|(spot, _)| spot)
+                        // TODO Could pick something closer, but meh, aborted trips are bugs anyway
+                        .get(0)
+                        .map(|(spot, _)| spot.clone())
                         .or_else(|| {
                             parking
                                 .path_to_free_parking_spot(driving_lane, &vehicle, map)
@@ -911,6 +928,7 @@ impl TripManager {
                 assert_eq!(person.state, PersonState::OffMap);
                 self.events.push(Event::PersonEntersMap(
                     person.id,
+                    TripMode::from_agent(AgentID::Car(use_vehicle)),
                     map.get_l(start_pos.lane()).src_i,
                     origin,
                 ));
@@ -1021,8 +1039,12 @@ impl TripManager {
                     match start.connection {
                         SidewalkPOI::Building(b) => PersonState::Inside(b),
                         SidewalkPOI::Border(i, ref loc) => {
-                            self.events
-                                .push(Event::PersonEntersMap(person.id, i, loc.clone()));
+                            self.events.push(Event::PersonEntersMap(
+                                person.id,
+                                TripMode::Walk,
+                                i,
+                                loc.clone(),
+                            ));
                             PersonState::OffMap
                         }
                         SidewalkPOI::SuddenlyAppear => {
@@ -1030,6 +1052,7 @@ impl TripManager {
                             // with. For interactively spawned people, doesn't really matter.
                             self.events.push(Event::PersonEntersMap(
                                 person.id,
+                                TripMode::Walk,
                                 map.get_l(start.sidewalk_pos.lane()).src_i,
                                 None,
                             ));
@@ -1069,8 +1092,12 @@ impl TripManager {
                     match start.connection {
                         SidewalkPOI::Building(b) => PersonState::Inside(b),
                         SidewalkPOI::Border(i, ref loc) => {
-                            self.events
-                                .push(Event::PersonEntersMap(person.id, i, loc.clone()));
+                            self.events.push(Event::PersonEntersMap(
+                                person.id,
+                                TripMode::Walk,
+                                i,
+                                loc.clone(),
+                            ));
                             PersonState::OffMap
                         }
                         SidewalkPOI::SuddenlyAppear => {
@@ -1078,6 +1105,7 @@ impl TripManager {
                             // with. For interactively spawned people, doesn't really matter.
                             self.events.push(Event::PersonEntersMap(
                                 person.id,
+                                TripMode::Walk,
                                 map.get_l(start.sidewalk_pos.lane()).src_i,
                                 None,
                             ));
@@ -1119,8 +1147,12 @@ impl TripManager {
                     match start.connection {
                         SidewalkPOI::Building(b) => PersonState::Inside(b),
                         SidewalkPOI::Border(i, ref loc) => {
-                            self.events
-                                .push(Event::PersonEntersMap(person.id, i, loc.clone()));
+                            self.events.push(Event::PersonEntersMap(
+                                person.id,
+                                TripMode::Walk,
+                                i,
+                                loc.clone(),
+                            ));
                             PersonState::OffMap
                         }
                         SidewalkPOI::SuddenlyAppear => {
@@ -1128,6 +1160,7 @@ impl TripManager {
                             // with. For interactively spawned people, doesn't really matter.
                             self.events.push(Event::PersonEntersMap(
                                 person.id,
+                                TripMode::Walk,
                                 map.get_l(start.sidewalk_pos.lane()).src_i,
                                 None,
                             ));
@@ -1357,6 +1390,7 @@ impl<T> TripResult<T> {
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Person {
     pub id: PersonID,
+    pub orig_id: Option<OrigPersonID>,
     pub trips: Vec<TripID>,
     // TODO home
     pub state: PersonState,

@@ -2,6 +2,7 @@ mod dashboards;
 pub mod gameplay;
 mod misc_tools;
 mod speed;
+mod uber_turns;
 
 use self::misc_tools::{RoutePreview, ShowTrafficSignal, TurnExplorer};
 use crate::app::App;
@@ -13,7 +14,7 @@ use crate::edit::{
 };
 use crate::game::{State, Transition, WizardState};
 use crate::helpers::ID;
-use crate::layer::Layers;
+use crate::layer::PickLayer;
 use crate::managed::{WrappedComposite, WrappedOutcome};
 use crate::pregame::main_menu;
 use crate::render::AgentColorScheme;
@@ -49,6 +50,7 @@ pub struct SandboxControls {
 
 impl SandboxMode {
     pub fn new(ctx: &mut EventCtx, app: &mut App, mode: GameplayMode) -> SandboxMode {
+        app.primary.clear_sim();
         let gameplay = mode.initialize(app, ctx);
 
         SandboxMode {
@@ -116,12 +118,8 @@ impl State for SandboxMode {
             ctx.canvas_movement();
         }
 
-        let (maybe_t, exit) = self.gameplay.event(ctx, app, &mut self.controls);
-        if let Some(t) = maybe_t {
+        if let Some(t) = self.gameplay.event(ctx, app, &mut self.controls) {
             return t;
-        }
-        if exit {
-            return Transition::Push(WizardState::new(Box::new(exit_sandbox)));
         }
 
         if ctx.redo_mouseover() {
@@ -134,10 +132,10 @@ impl State for SandboxMode {
         }
 
         if let Some(ref mut m) = self.controls.minimap {
-            if let Some(t) = m.event(app, ctx) {
+            if let Some(t) = m.event(ctx, app) {
                 return t;
             }
-            if let Some(t) = Layers::update(ctx, app, &m.composite) {
+            if let Some(t) = PickLayer::update(ctx, app, &m.composite) {
                 return t;
             }
         }
@@ -174,7 +172,7 @@ impl State for SandboxMode {
                 }
                 Some(WrappedOutcome::Clicked(x)) => match x.as_ref() {
                     "back" => {
-                        return Transition::Push(WizardState::new(Box::new(exit_sandbox)));
+                        return maybe_exit_sandbox();
                     }
                     _ => unreachable!(),
                 },
@@ -201,7 +199,9 @@ impl State for SandboxMode {
     }
 
     fn draw(&self, g: &mut GfxCtx, app: &App) {
-        app.layer.draw(g);
+        if let Some(ref l) = app.layer {
+            l.draw(g, app);
+        }
 
         if let Some(ref c) = self.controls.common {
             c.draw(g, app);
@@ -230,22 +230,19 @@ impl State for SandboxMode {
         self.gameplay.draw(g, app);
     }
 
-    fn on_suspend(&mut self, ctx: &mut EventCtx, app: &mut App) {
-        if let Some(ref mut s) = self.controls.speed {
-            s.pause(ctx, app);
-        }
-    }
-
     fn on_destroy(&mut self, _: &mut EventCtx, app: &mut App) {
-        app.layer = Layers::Inactive;
+        app.layer = None;
         app.agent_cs = AgentColorScheme::new(&app.cs);
     }
 }
 
+pub fn maybe_exit_sandbox() -> Transition {
+    Transition::Push(WizardState::new(Box::new(exit_sandbox)))
+}
+
 fn exit_sandbox(wiz: &mut Wizard, ctx: &mut EventCtx, app: &mut App) -> Option<Transition> {
     let mut wizard = wiz.wrap(ctx);
-    let unsaved = app.primary.map.get_edits().edits_name == "untitled edits"
-        && !app.primary.map.get_edits().commands.is_empty();
+    let unsaved = app.primary.map.unsaved_edits();
     let (resp, _) = wizard.choose("Are you ready to leave this mode?", || {
         let mut choices = Vec::new();
         choices.push(Choice::new("keep playing", ()));
@@ -258,15 +255,12 @@ fn exit_sandbox(wiz: &mut Wizard, ctx: &mut EventCtx, app: &mut App) -> Option<T
     if resp == "keep playing" {
         return Some(Transition::Pop);
     }
-    let map_name = app.primary.map.get_name().clone();
-    if resp == "save edits and quit" {
+    if resp == "save edits first" {
         save_edits_as(&mut wizard, app)?;
     }
     ctx.loading_screen("reset map and sim", |ctx, mut timer| {
-        if app.primary.map.get_edits().edits_name != "untitled edits"
-            || !app.primary.map.get_edits().commands.is_empty()
-        {
-            apply_map_edits(ctx, app, MapEdits::new(&map_name));
+        if !app.primary.map.get_edits().commands.is_empty() {
+            apply_map_edits(ctx, app, MapEdits::new());
             app.primary
                 .map
                 .recalculate_pathfinding_after_edits(&mut timer);
@@ -274,7 +268,7 @@ fn exit_sandbox(wiz: &mut Wizard, ctx: &mut EventCtx, app: &mut App) -> Option<T
         app.primary.clear_sim();
         app.set_prebaked(None);
     });
-    ctx.canvas.save_camera_state(&map_name);
+    ctx.canvas.save_camera_state(app.primary.map.get_name());
     Some(Transition::Clear(vec![main_menu(ctx, app)]))
 }
 
@@ -316,7 +310,7 @@ impl AgentMeter {
                 ctx,
                 GeomBatch::from(vec![(
                     Color::WHITE,
-                    Polygon::rectangle(0.2 * ctx.canvas.window_width, 2.0),
+                    Polygon::rectangle(0.2 * ctx.canvas.window_width / ctx.get_scale_factor(), 2.0),
                 )]),
             )
             .margin(15)
@@ -389,12 +383,12 @@ impl ContextualActions for Actions {
                 ID::Intersection(i) => {
                     if app.primary.map.get_i(i).is_traffic_signal() {
                         actions.push((Key::F, "explore traffic signal details".to_string()));
-                        actions.push((Key::C, "show current demand".to_string()));
                         actions.push((Key::E, "edit traffic signal".to_string()));
                     }
                     if app.primary.map.get_i(i).is_stop_sign() {
                         actions.push((Key::E, "edit stop sign".to_string()));
                     }
+                    actions.push((Key::U, "explore uber-turns".to_string()));
                 }
                 ID::Lane(l) => {
                     if !app.primary.map.get_turns_from_lane(l).is_empty() {
@@ -406,13 +400,8 @@ impl ContextualActions for Actions {
                 }
                 ID::Car(c) => {
                     if c.1 == VehicleType::Bus {
-                        let route = app.primary.sim.bus_route_id(c).unwrap();
-                        match app.layer {
-                            Layers::BusRoute(_, r, _) if r == route => {}
-                            _ => {
-                                actions.push((Key::R, "show route".to_string()));
-                            }
-                        }
+                        // TODO Hide the button if the layer is open
+                        actions.push((Key::R, "show route".to_string()));
                     }
                 }
                 _ => {}
@@ -433,25 +422,16 @@ impl ContextualActions for Actions {
             (ID::Intersection(i), "explore traffic signal details") => {
                 Transition::Push(ShowTrafficSignal::new(ctx, app, i))
             }
-            (ID::Intersection(i), "show current demand") => {
-                app.layer = crate::layer::traffic::intersection_demand(ctx, app, i);
-                Transition::Keep
-            }
-            (ID::Intersection(i), "edit traffic signal") => {
-                let edit = EditMode::new(ctx, app, self.gameplay.clone());
-                let sim_copy = edit.suspended_sim.clone();
-                Transition::PushTwice(
-                    Box::new(edit),
-                    Box::new(TrafficSignalEditor::new(i, ctx, app, sim_copy)),
-                )
-            }
-            (ID::Intersection(i), "edit stop sign") => {
-                let edit = EditMode::new(ctx, app, self.gameplay.clone());
-                let sim_copy = edit.suspended_sim.clone();
-                Transition::PushTwice(
-                    Box::new(edit),
-                    Box::new(StopSignEditor::new(i, ctx, app, sim_copy)),
-                )
+            (ID::Intersection(i), "edit traffic signal") => Transition::PushTwice(
+                Box::new(EditMode::new(ctx, app, self.gameplay.clone())),
+                Box::new(TrafficSignalEditor::new(i, ctx, app)),
+            ),
+            (ID::Intersection(i), "edit stop sign") => Transition::PushTwice(
+                Box::new(EditMode::new(ctx, app, self.gameplay.clone())),
+                Box::new(StopSignEditor::new(i, ctx, app)),
+            ),
+            (ID::Intersection(i), "explore uber-turns") => {
+                Transition::Push(uber_turns::UberTurnPicker::new(ctx, app, i))
             }
             (ID::Lane(l), "explore turns from this lane") => {
                 Transition::Push(TurnExplorer::new(ctx, app, l))
@@ -462,11 +442,11 @@ impl ContextualActions for Actions {
             ),
             (ID::Car(c), "show route") => {
                 *close_panel = false;
-                app.layer = crate::layer::bus::ShowBusRoute::new(
+                app.layer = Some(Box::new(crate::layer::bus::ShowBusRoute::new(
                     ctx,
                     app,
                     app.primary.sim.bus_route_id(c).unwrap(),
-                );
+                )));
                 Transition::Keep
             }
             (_, "follow") => {

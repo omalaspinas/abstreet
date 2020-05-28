@@ -6,7 +6,8 @@ use crate::game::{msg, State, Transition};
 use crate::helpers::ID;
 use crate::sandbox::gameplay::{GameplayMode, GameplayState};
 use crate::sandbox::{
-    spawn_agents_around, AgentMeter, SandboxControls, SandboxMode, SpeedControls, TimePanel,
+    maybe_exit_sandbox, spawn_agents_around, AgentMeter, SandboxControls, SandboxMode,
+    SpeedControls, TimePanel,
 };
 use abstutil::Timer;
 use ezgui::{
@@ -14,14 +15,15 @@ use ezgui::{
     HorizontalAlignment, Key, Line, Outcome, RewriteColor, ScreenPt, Text, TextExt,
     VerticalAlignment, Widget,
 };
-use geom::{Distance, Duration, PolyLine, Polygon, Pt2D, Time};
-use map_model::{BuildingID, IntersectionID, IntersectionType, LaneType, RoadID};
-use maplit::btreeset;
+use geom::{ArrowCap, Distance, Duration, PolyLine, Polygon, Pt2D, Time};
+use map_model::{BuildingID, IntersectionID, IntersectionType, LaneType, Map};
 use sim::{
     AgentID, Analytics, BorderSpawnOverTime, CarID, OriginDestination, ScenarioGenerator,
     VehicleType,
 };
 
+// TODO Unfortunately this has to be tuned when major map / simulation changes happen.
+// TODO Aaand this broke, because all the cars seemingly park inside now. :P
 const ESCORT: CarID = CarID(34, VehicleType::Car);
 const CAR_BIKE_CONTENTION_GOAL: Duration = Duration::const_seconds(60.0);
 
@@ -79,49 +81,43 @@ impl Tutorial {
         app: &mut App,
         controls: &mut SandboxControls,
         tut: &mut TutorialState,
-    ) -> (Option<Transition>, bool) {
+    ) -> Option<Transition> {
         // First of all, might need to initiate warping
         if !self.warped {
             if let Some((ref id, zoom)) = tut.stage().warp_to {
                 self.warped = true;
-                return (
-                    Some(Transition::Push(Warping::new(
-                        ctx,
-                        id.canonical_point(&app.primary).unwrap(),
-                        Some(zoom),
-                        None,
-                        &mut app.primary,
-                    ))),
-                    false,
-                );
+                return Some(Transition::Push(Warping::new(
+                    ctx,
+                    id.canonical_point(&app.primary).unwrap(),
+                    Some(zoom),
+                    None,
+                    &mut app.primary,
+                )));
             }
         }
 
         match self.top_center.event(ctx) {
             Some(Outcome::Clicked(x)) => match x.as_ref() {
                 "Quit" => {
-                    return (None, true);
+                    return Some(maybe_exit_sandbox());
                 }
                 "previous tutorial" => {
                     tut.current = TutorialPointer::new(tut.current.stage - 1, 0);
-                    return (Some(transition(ctx, app, tut)), false);
+                    return Some(transition(ctx, app, tut));
                 }
                 "next tutorial" => {
                     tut.current = TutorialPointer::new(tut.current.stage + 1, 0);
-                    return (Some(transition(ctx, app, tut)), false);
+                    return Some(transition(ctx, app, tut));
                 }
                 "instructions" => {
                     tut.current = TutorialPointer::new(tut.current.stage, 0);
-                    return (Some(transition(ctx, app, tut)), false);
+                    return Some(transition(ctx, app, tut));
                 }
                 "edit map" => {
                     // TODO Ideally this would be an inactive button in message states
                     if self.msg_panel.is_none() {
                         let mode = GameplayMode::Tutorial(tut.current);
-                        return (
-                            Some(Transition::Push(Box::new(EditMode::new(ctx, app, mode)))),
-                            false,
-                        );
+                        return Some(Transition::Push(Box::new(EditMode::new(ctx, app, mode))));
                     }
                 }
                 _ => unreachable!(),
@@ -134,28 +130,28 @@ impl Tutorial {
                 Some(Outcome::Clicked(x)) => match x.as_ref() {
                     "previous message" => {
                         tut.prev();
-                        return (Some(transition(ctx, app, tut)), false);
+                        return Some(transition(ctx, app, tut));
                     }
                     "next message" | "Try it" => {
                         tut.next();
-                        return (Some(transition(ctx, app, tut)), false);
+                        return Some(transition(ctx, app, tut));
                     }
                     _ => unreachable!(),
                 },
                 None => {
                     // Don't allow other interactions
-                    return (Some(Transition::Keep), false);
+                    return Some(Transition::Keep);
                 }
             }
         }
 
         // Interaction things
         if tut.interaction() == Task::Camera {
-            if app.primary.current_selection == Some(ID::Building(BuildingID(9)))
+            if app.primary.current_selection == Some(ID::Building(tut.montlake_market))
                 && app.per_obj.left_click(ctx, "put out the... fire?")
             {
                 tut.next();
-                return (Some(transition(ctx, app, tut)), false);
+                return Some(transition(ctx, app, tut));
             }
         } else if tut.interaction() == Task::InspectObjects {
             if tut.inspected_lane
@@ -164,12 +160,12 @@ impl Tutorial {
                 && tut.inspected_border
             {
                 tut.next();
-                return (Some(transition(ctx, app, tut)), false);
+                return Some(transition(ctx, app, tut));
             }
         } else if tut.interaction() == Task::TimeControls {
             if app.primary.sim.time() >= Time::START_OF_DAY + Duration::hours(17) {
                 tut.next();
-                return (Some(transition(ctx, app, tut)), false);
+                return Some(transition(ctx, app, tut));
             }
         } else if tut.interaction() == Task::PauseResume {
             let is_paused = controls.speed.as_ref().unwrap().is_paused();
@@ -183,7 +179,7 @@ impl Tutorial {
             }
             if tut.num_pauses == 3 {
                 tut.next();
-                return (Some(transition(ctx, app, tut)), false);
+                return Some(transition(ctx, app, tut));
             }
         } else if tut.interaction() == Task::Escort {
             let following_car = controls
@@ -210,17 +206,17 @@ impl Tutorial {
 
             if tut.prank_done {
                 tut.next();
-                return (Some(transition(ctx, app, tut)), false);
+                return Some(transition(ctx, app, tut));
             }
         } else if tut.interaction() == Task::LowParking {
             if tut.parking_found {
                 tut.next();
-                return (Some(transition(ctx, app, tut)), false);
+                return Some(transition(ctx, app, tut));
             }
         } else if tut.interaction() == Task::WatchBikes {
             if app.primary.sim.time() >= Time::START_OF_DAY + Duration::minutes(2) {
                 tut.next();
-                return (Some(transition(ctx, app, tut)), false);
+                return Some(transition(ctx, app, tut));
             }
         } else if tut.interaction() == Task::FixBikes {
             if app.primary.sim.is_done() {
@@ -238,79 +234,62 @@ impl Tutorial {
                 if !tut.score_delivered {
                     tut.score_delivered = true;
                     if before == after {
-                        return (
-                            Some(Transition::Push(msg(
-                                "All trips completed",
-                                vec![
-                                    "Your changes didn't affect anything!",
-                                    "Try editing the map to create some bike lanes.",
-                                ],
-                            ))),
-                            false,
-                        );
+                        return Some(Transition::Push(msg(
+                            "All trips completed",
+                            vec![
+                                "Your changes didn't affect anything!",
+                                "Try editing the map to create some bike lanes.",
+                            ],
+                        )));
                     }
                     if after > before {
-                        return (
-                            Some(Transition::Push(msg(
-                                "All trips completed",
-                                vec![
-                                    "Your changes made things worse!".to_string(),
-                                    format!(
-                                        "All trips originally finished in {}, but now they took {}",
-                                        before, after
-                                    ),
-                                    "".to_string(),
-                                    "Try again!".to_string(),
-                                ],
-                            ))),
-                            false,
-                        );
+                        return Some(Transition::Push(msg(
+                            "All trips completed",
+                            vec![
+                                "Your changes made things worse!".to_string(),
+                                format!(
+                                    "All trips originally finished in {}, but now they took {}",
+                                    before, after
+                                ),
+                                "".to_string(),
+                                "Try again!".to_string(),
+                            ],
+                        )));
                     }
                     if before - after < CAR_BIKE_CONTENTION_GOAL {
-                        return (
-                            Some(Transition::Push(msg(
-                                "All trips completed",
-                                vec![
-                                    "Nice, you helped things a bit!".to_string(),
-                                    format!(
-                                        "All trips originally took {}, but now they took {}",
-                                        before, after
-                                    ),
-                                    "".to_string(),
-                                    "See if you can do a little better though.".to_string(),
-                                ],
-                            ))),
-                            false,
-                        );
-                    }
-                    return (
-                        Some(Transition::Push(msg(
+                        return Some(Transition::Push(msg(
                             "All trips completed",
-                            vec![format!(
-                                "Awesome! All trips originally took {}, but now they only took {}",
-                                before, after
-                            )],
-                        ))),
-                        false,
-                    );
+                            vec![
+                                "Nice, you helped things a bit!".to_string(),
+                                format!(
+                                    "All trips originally took {}, but now they took {}",
+                                    before, after
+                                ),
+                                "".to_string(),
+                                "See if you can do a little better though.".to_string(),
+                            ],
+                        )));
+                    }
+                    return Some(Transition::Push(msg(
+                        "All trips completed",
+                        vec![format!(
+                            "Awesome! All trips originally took {}, but now they only took {}",
+                            before, after
+                        )],
+                    )));
                 }
                 if before - after >= CAR_BIKE_CONTENTION_GOAL {
                     tut.next();
                 }
-                return (Some(transition(ctx, app, tut)), false);
-            }
-        } else if tut.interaction() == Task::WatchBuses {
-            if app.primary.sim.time() >= Time::START_OF_DAY + Duration::minutes(5) {
-                tut.next();
-                return (Some(transition(ctx, app, tut)), false);
+                return Some(transition(ctx, app, tut));
             }
         } else if tut.interaction() == Task::Done {
             // If the player chooses to stay here, at least go back to the message panel.
             tut.prev();
-            return (None, true);
+            return Some(maybe_exit_sandbox());
         }
 
-        (None, false)
+        None
     }
 }
 
@@ -320,7 +299,7 @@ impl GameplayState for Tutorial {
         ctx: &mut EventCtx,
         app: &mut App,
         controls: &mut SandboxControls,
-    ) -> (Option<Transition>, bool) {
+    ) -> Option<Transition> {
         // Dance around borrow-checker issues
         let mut tut = app.session.tutorial.take().unwrap();
         let result = self.inner_event(ctx, app, controls, &mut tut);
@@ -352,7 +331,7 @@ impl GameplayState for Tutorial {
                             .to_pt(),
                         pt,
                     ])
-                    .make_arrow(Distance::meters(20.0))
+                    .make_arrow(Distance::meters(20.0), ArrowCap::Triangle)
                     .unwrap(),
                 );
                 g.unfork();
@@ -365,7 +344,7 @@ impl GameplayState for Tutorial {
         if tut.interaction() == Task::Camera {
             g.draw_polygon(
                 Color::hex("#e25822"),
-                &app.primary.map.get_b(BuildingID(9)).polygon,
+                &app.primary.map.get_b(tut.montlake_market).polygon,
             );
         }
     }
@@ -407,8 +386,6 @@ enum Task {
     LowParking,
     WatchBikes,
     FixBikes,
-    WatchBuses,
-    FixBuses,
     Done,
 }
 
@@ -475,8 +452,6 @@ impl Task {
                     CAR_BIKE_CONTENTION_GOAL
                 )));
             }
-            Task::WatchBuses => "Simulate 5 minutes and watch the buses",
-            Task::FixBuses => "Speed up bus 43 and 48",
             Task::Done => "Tutorial complete!",
         };
 
@@ -496,8 +471,6 @@ impl Task {
             Task::LowParking => "Using extra data layers",
             Task::WatchBikes => "Observing a problem",
             Task::FixBikes => "Editing lanes",
-            Task::WatchBuses => "Observing buses",
-            Task::FixBuses => "Speeding up buses",
             Task::Done => "Tutorial complete!",
         }
     }
@@ -616,9 +589,11 @@ pub struct TutorialState {
     parking_found: bool,
 
     score_delivered: bool,
+
+    montlake_market: BuildingID,
 }
 
-fn make_bike_lane_scenario() -> ScenarioGenerator {
+fn make_bike_lane_scenario(map: &Map) -> ScenarioGenerator {
     let mut s = ScenarioGenerator::empty("car vs bike contention");
     s.border_spawn_over_time.push(BorderSpawnOverTime {
         num_peds: 0,
@@ -627,31 +602,12 @@ fn make_bike_lane_scenario() -> ScenarioGenerator {
         percent_use_transit: 0.0,
         start_time: Time::START_OF_DAY,
         stop_time: Time::START_OF_DAY + Duration::seconds(10.0),
-        start_from_border: RoadID(303).backwards(),
-        goal: OriginDestination::GotoBldg(BuildingID(3)),
+        start_from_border: map
+            .find_r_by_osm_id(263665925, (2499826475, 53096959))
+            .unwrap()
+            .backwards(),
+        goal: OriginDestination::GotoBldg(map.find_b_by_osm_id(40833037).unwrap()),
     });
-    s
-}
-
-fn make_bus_lane_scenario() -> ScenarioGenerator {
-    let mut s = ScenarioGenerator::empty("car vs bus contention");
-    s.only_seed_buses = Some(btreeset! {"43".to_string(), "48".to_string()});
-    for src in vec![
-        RoadID(61).backwards(),
-        RoadID(240).forwards(),
-        RoadID(56).forwards(),
-    ] {
-        s.border_spawn_over_time.push(BorderSpawnOverTime {
-            num_peds: 100,
-            num_cars: 100,
-            num_bikes: 0,
-            percent_use_transit: 1.0,
-            start_time: Time::START_OF_DAY,
-            stop_time: Time::START_OF_DAY + Duration::seconds(10.0),
-            start_from_border: src,
-            goal: OriginDestination::EndOfRoad(RoadID(0).forwards()),
-        });
-    }
     s
 }
 
@@ -787,8 +743,6 @@ impl TutorialState {
             app.primary.current_selection = None;
         }
 
-        // TODO Should some of this always happen?
-        app.primary.clear_sim();
         if let Some(ref cb) = self.stage().spawn {
             (cb)(app);
             app.primary
@@ -899,6 +853,8 @@ impl TutorialState {
             prank_done: false,
             parking_found: false,
             score_delivered: false,
+
+            montlake_market: app.primary.map.find_b_by_osm_id(97430815).unwrap(),
         };
 
         let tool_panel = tool_panel(ctx, app);
@@ -916,9 +872,15 @@ impl TutorialState {
             0.97 * ctx.canvas.window_height,
         );
 
+        let map = &app.primary.map;
+
         state.stages.push(
             Stage::new(Task::Camera)
-                .warp_to(ID::Intersection(IntersectionID(141)), None)
+                // TODO Call these by orig_id to be robust to changes
+                .warp_to(
+                    ID::Intersection(map.find_i_by_osm_id(53149407).unwrap()),
+                    None,
+                )
                 .msg(
                     vec![
                         "Welcome to your first day as a contract traffic engineer --",
@@ -997,7 +959,10 @@ impl TutorialState {
 
         state.stages.push(
             Stage::new(Task::TimeControls)
-                .warp_to(ID::Intersection(IntersectionID(64)), None)
+                .warp_to(
+                    ID::Intersection(map.find_i_by_osm_id(53096945).unwrap()),
+                    Some(6.5),
+                )
                 .msg(
                     vec![
                         "Inspection complete!",
@@ -1058,8 +1023,11 @@ impl TutorialState {
         state.stages.push(
             Stage::new(Task::Escort)
                 // Don't center on where the agents are, be a little offset
-                .warp_to(ID::Building(BuildingID(813)), Some(10.0))
-                .spawn_around(IntersectionID(247))
+                .warp_to(
+                    ID::Building(map.find_b_by_osm_id(217699780).unwrap()),
+                    Some(10.0),
+                )
+                .spawn_around(map.find_i_by_osm_id(1709145066).unwrap())
                 .msg(
                     vec!["Alright alright, no need to wear out your spacebar."],
                     None,
@@ -1119,10 +1087,6 @@ impl TutorialState {
                     arrow(minimap.composite.center_of("search")),
                 )
                 .msg(
-                    vec!["Set up shortcuts to favorite areas"],
-                    arrow(minimap.composite.center_of("shortcuts")),
-                )
-                .msg(
                     vec![
                         "Apply different layers to the map, to find data such as:",
                         "- roads with high traffic",
@@ -1141,11 +1105,12 @@ impl TutorialState {
                 ),
         );
 
-        let bike_lane_scenario = make_bike_lane_scenario();
+        let bike_lane_scenario = make_bike_lane_scenario(map);
+        let bike_lane_focus_pt = map.find_b_by_osm_id(217699496).unwrap();
 
         state.stages.push(
             Stage::new(Task::WatchBikes)
-                .warp_to(ID::Building(BuildingID(543)), None)
+                .warp_to(ID::Building(bike_lane_focus_pt), None)
                 .spawn_scenario(bike_lane_scenario.clone())
                 .msg(
                     vec![
@@ -1162,7 +1127,7 @@ impl TutorialState {
         state.stages.push(
             Stage::new(Task::FixBikes)
                 .spawn_scenario(bike_lane_scenario)
-                .warp_to(ID::Building(BuildingID(543)), None)
+                .warp_to(ID::Building(bike_lane_focus_pt), None)
                 .msg(
                     vec![
                         "Looks like lots of cars and bikes trying to go to the playfield.",
@@ -1210,36 +1175,6 @@ impl TutorialState {
                 ),
         );
 
-        if false {
-            let bus_lane_scenario = make_bus_lane_scenario();
-            // TODO There's no clear measurement for how well the buses are doing.
-            // TODO Probably want a steady stream of the cars appearing
-
-            state.stages.push(
-                Stage::new(Task::WatchBuses)
-                    .warp_to(ID::Building(BuildingID(1979)), Some(0.5))
-                    .spawn_scenario(bus_lane_scenario.clone())
-                    .msg(
-                        vec![
-                            "Alright, now it's a game day at the University of Washington.",
-                            "Everyone's heading north across the bridge.",
-                            "Watch what happens to the bus 43 and 48.",
-                        ],
-                        None,
-                    ),
-            );
-
-            state.stages.push(
-                Stage::new(Task::FixBuses)
-                    .warp_to(ID::Building(BuildingID(1979)), Some(0.5))
-                    .spawn_scenario(bus_lane_scenario.clone())
-                    .msg(
-                        vec!["Let's speed up the poor bus! Why not dedicate some bus lanes to it?"],
-                        None,
-                    ),
-            );
-        }
-
         state.stages.push(Stage::new(Task::Done).msg(
             vec![
                 "Training complete!",
@@ -1269,9 +1204,8 @@ impl TutorialState {
         // work.
     }
 
-    // TODO Weird hack to prebake.
-    pub fn scenarios_to_prebake() -> Vec<ScenarioGenerator> {
-        vec![make_bike_lane_scenario(), make_bus_lane_scenario()]
+    pub fn scenarios_to_prebake(map: &Map) -> Vec<ScenarioGenerator> {
+        vec![make_bike_lane_scenario(map)]
     }
 }
 

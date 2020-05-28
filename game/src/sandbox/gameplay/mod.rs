@@ -1,6 +1,5 @@
 // TODO pub so challenges can grab cutscenes. Weird?
 pub mod commute;
-mod create_gridlock;
 pub mod fix_traffic_signals;
 mod freeform;
 mod play_scenario;
@@ -9,22 +8,22 @@ mod tutorial;
 
 pub use self::tutorial::{Tutorial, TutorialPointer, TutorialState};
 use crate::app::App;
-use crate::challenges::Challenge;
+use crate::challenges::{challenges_picker, Challenge};
 use crate::common::ContextualActions;
-use crate::edit::EditMode;
-use crate::game::{msg, Transition};
+use crate::edit::{apply_map_edits, save_edits_as};
+use crate::game::{State, Transition, WizardState};
 use crate::helpers::ID;
-use crate::managed::WrappedComposite;
-use crate::sandbox::SandboxControls;
+use crate::pregame::main_menu;
+use crate::sandbox::{SandboxControls, SandboxMode};
 use abstutil::Timer;
 use ezgui::{
-    lctrl, Btn, Color, Composite, EventCtx, GeomBatch, GfxCtx, HorizontalAlignment, Key, Line,
-    VerticalAlignment, Widget,
+    lctrl, Btn, Choice, Color, Composite, EventCtx, GeomBatch, GfxCtx, Key, Line, Outcome, TextExt,
+    Widget, Wizard,
 };
 use geom::{Duration, Polygon};
 use map_model::{EditCmd, EditIntersection, Map, MapEdits};
 use rand_xorshift::XorShiftRng;
-use sim::{Analytics, PersonID, Scenario, ScenarioGenerator};
+use sim::{Analytics, OrigPersonID, Scenario, ScenarioGenerator};
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum GameplayMode {
@@ -33,26 +32,20 @@ pub enum GameplayMode {
     Freeform(String),
     // Map path, scenario name
     PlayScenario(String, String),
-    // Map path
-    CreateGridlock(String),
     FixTrafficSignals,
-    // TODO Kinda gross. What stage in the tutorial?
-    #[allow(unused)]
-    FixTrafficSignalsTutorial(usize),
-    OptimizeCommute(PersonID, Duration),
+    OptimizeCommute(OrigPersonID, Duration),
 
     // current
     Tutorial(TutorialPointer),
 }
 
 pub trait GameplayState: downcast_rs::Downcast {
-    // True if we should exit the sandbox mode.
     fn event(
         &mut self,
         ctx: &mut EventCtx,
         app: &mut App,
         controls: &mut SandboxControls,
-    ) -> (Option<Transition>, bool);
+    ) -> Option<Transition>;
     fn draw(&self, g: &mut GfxCtx, app: &App);
 
     fn can_move_canvas(&self) -> bool {
@@ -87,11 +80,7 @@ impl GameplayMode {
         match self {
             GameplayMode::Freeform(ref path) => path.to_string(),
             GameplayMode::PlayScenario(ref path, _) => path.to_string(),
-            GameplayMode::CreateGridlock(ref path) => path.to_string(),
             GameplayMode::FixTrafficSignals => abstutil::path_map("downtown"),
-            GameplayMode::FixTrafficSignalsTutorial(_) => {
-                abstutil::path_synthetic_map("signal_single")
-            }
             GameplayMode::OptimizeCommute(_, _) => abstutil::path_map("montlake"),
             GameplayMode::Tutorial(_) => abstutil::path_map("montlake"),
         }
@@ -109,16 +98,6 @@ impl GameplayMode {
                 return None;
             }
             GameplayMode::PlayScenario(_, ref scenario) => scenario.to_string(),
-            GameplayMode::FixTrafficSignalsTutorial(stage) => {
-                let generator = if *stage == 0 {
-                    fix_traffic_signals::tutorial_scenario_lvl1(map)
-                } else if *stage == 1 {
-                    fix_traffic_signals::tutorial_scenario_lvl2(map)
-                } else {
-                    unreachable!()
-                };
-                return Some(generator.generate(map, &mut rng, timer));
-            }
             // TODO Some of these WILL have scenarios!
             GameplayMode::Tutorial(_) => {
                 return None;
@@ -155,14 +134,14 @@ impl GameplayMode {
 
     pub fn can_edit_lanes(&self) -> bool {
         match self {
-            GameplayMode::FixTrafficSignals | GameplayMode::FixTrafficSignalsTutorial(_) => false,
+            GameplayMode::FixTrafficSignals => false,
             _ => true,
         }
     }
 
     pub fn can_edit_stop_signs(&self) -> bool {
         match self {
-            GameplayMode::FixTrafficSignals | GameplayMode::FixTrafficSignalsTutorial(_) => false,
+            GameplayMode::FixTrafficSignals => false,
             _ => true,
         }
     }
@@ -170,7 +149,9 @@ impl GameplayMode {
     pub fn allows(&self, edits: &MapEdits) -> bool {
         for cmd in &edits.commands {
             match cmd {
-                EditCmd::ChangeLaneType { .. } | EditCmd::ReverseLane { .. } => {
+                EditCmd::ChangeLaneType { .. }
+                | EditCmd::ReverseLane { .. }
+                | EditCmd::ChangeSpeedLimit { .. } => {
                     if !self.can_edit_lanes() {
                         return false;
                     }
@@ -245,11 +226,8 @@ impl GameplayMode {
             GameplayMode::PlayScenario(_, ref scenario) => {
                 play_scenario::PlayScenario::new(ctx, app, scenario, self.clone())
             }
-            GameplayMode::CreateGridlock(_) => {
-                create_gridlock::CreateGridlock::new(ctx, app, self.clone())
-            }
-            GameplayMode::FixTrafficSignals | GameplayMode::FixTrafficSignalsTutorial(_) => {
-                fix_traffic_signals::FixTrafficSignals::new(ctx, app, self.clone())
+            GameplayMode::FixTrafficSignals => {
+                fix_traffic_signals::FixTrafficSignals::new(ctx, app)
             }
             GameplayMode::OptimizeCommute(p, goal) => {
                 commute::OptimizeCommute::new(ctx, app, *p, *goal)
@@ -311,36 +289,112 @@ fn challenge_header(ctx: &mut EventCtx, title: &str) -> Widget {
     .padding(5)
 }
 
-fn challenge_controller(
-    ctx: &mut EventCtx,
-    app: &App,
-    gameplay: GameplayMode,
-    title: &str,
-    extra_rows: Vec<Widget>,
-) -> WrappedComposite {
-    let description = Challenge::find(&gameplay).0.description;
+pub struct FinalScore {
+    composite: Composite,
+    retry: GameplayMode,
+    next_mode: Option<GameplayMode>,
+}
 
-    let mut rows = vec![challenge_header(ctx, title)];
-    rows.extend(extra_rows);
-
-    WrappedComposite::new(
-        Composite::new(Widget::col(rows).bg(app.cs.panel_bg))
-            .aligned(HorizontalAlignment::Center, VerticalAlignment::Top)
+impl FinalScore {
+    pub fn new(
+        ctx: &mut EventCtx,
+        app: &App,
+        msg: String,
+        mode: GameplayMode,
+        next_mode: Option<GameplayMode>,
+    ) -> Box<dyn State> {
+        Box::new(FinalScore {
+            composite: Composite::new(
+                Widget::row(vec![
+                    Widget::draw_svg(ctx, "../data/system/assets/characters/boss.svg")
+                        .container()
+                        .outline(10.0, Color::BLACK)
+                        .padding(10),
+                    Widget::col(vec![
+                        msg.draw_text(ctx),
+                        // TODO Adjust wording
+                        Btn::text_bg2("Keep simulating").build_def(ctx, None),
+                        Btn::text_bg2("Try again").build_def(ctx, None),
+                        if next_mode.is_some() {
+                            Btn::text_bg2("Next challenge").build_def(ctx, None)
+                        } else {
+                            Widget::nothing()
+                        },
+                        Btn::text_bg2("Back to challenges").build_def(ctx, None),
+                    ])
+                    .outline(10.0, Color::BLACK)
+                    .padding(10),
+                ])
+                .bg(app.cs.panel_bg),
+            )
             .build(ctx),
-    )
-    .cb(
-        "edit map",
-        Box::new(move |ctx, app| {
-            Some(Transition::Push(Box::new(EditMode::new(
-                ctx,
-                app,
-                gameplay.clone(),
-            ))))
-        }),
-    )
-    // TODO msg() is silly, it's hard to plumb the title. Also, show the challenge splash screen.
-    .cb(
-        "instructions",
-        Box::new(move |_, _| Some(Transition::Push(msg("Challenge", description.clone())))),
-    )
+            retry: mode,
+            next_mode,
+        })
+    }
+}
+
+impl State for FinalScore {
+    fn event(&mut self, ctx: &mut EventCtx, app: &mut App) -> Transition {
+        match self.composite.event(ctx) {
+            Some(Outcome::Clicked(x)) => match x.as_ref() {
+                "Keep simulating" => Transition::Pop,
+                "Try again" => {
+                    Transition::Replace(Box::new(SandboxMode::new(ctx, app, self.retry.clone())))
+                }
+                "Next challenge" => {
+                    if app.primary.map.unsaved_edits() {
+                        Transition::Push(WizardState::new(Box::new(maybe_save_first)))
+                    } else {
+                        Transition::Clear(vec![
+                            main_menu(ctx, app),
+                            Box::new(SandboxMode::new(ctx, app, self.next_mode.clone().unwrap())),
+                            (Challenge::find(self.next_mode.as_ref().unwrap())
+                                .0
+                                .cutscene
+                                .unwrap())(
+                                ctx, app, self.next_mode.as_ref().unwrap()
+                            ),
+                        ])
+                    }
+                }
+                "Back to challenges" => {
+                    if app.primary.map.unsaved_edits() {
+                        Transition::Push(WizardState::new(Box::new(maybe_save_first)))
+                    } else {
+                        Transition::Clear(vec![main_menu(ctx, app), challenges_picker(ctx, app)])
+                    }
+                }
+                _ => unreachable!(),
+            },
+            None => Transition::Keep,
+        }
+    }
+
+    fn draw(&self, g: &mut GfxCtx, app: &App) {
+        // Happens to be a nice background color too ;)
+        g.clear(app.cs.grass);
+        self.composite.draw(g);
+    }
+}
+
+fn maybe_save_first(wiz: &mut Wizard, ctx: &mut EventCtx, app: &mut App) -> Option<Transition> {
+    let mut wizard = wiz.wrap(ctx);
+    let (resp, _) = wizard.choose("Wait, do you want to save your map edits first?", || {
+        vec![Choice::new("save", ()), Choice::new("discard", ())]
+    })?;
+    if resp == "save" {
+        save_edits_as(&mut wizard, app)?;
+    }
+    ctx.loading_screen("reset map and sim", |ctx, mut timer| {
+        // Either they chose discard, or bailed out of the save menu
+        if app.primary.map.unsaved_edits() {
+            apply_map_edits(ctx, app, MapEdits::new());
+            app.primary
+                .map
+                .recalculate_pathfinding_after_edits(&mut timer);
+        }
+    });
+    // TODO Don't make the player pick the FinalScore thing again :(
+    Some(Transition::Pop)
 }

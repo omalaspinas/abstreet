@@ -1,5 +1,5 @@
 use crate::{
-    Checkbox, Color, Drawable, EventCtx, GeomBatch, GfxCtx, Line, ScreenDims, ScreenPt,
+    Checkbox, Color, Drawable, EventCtx, GeomBatch, GfxCtx, JustDraw, Line, ScreenDims, ScreenPt,
     ScreenRectangle, Text, TextExt, Widget, WidgetImpl, WidgetOutput,
 };
 use abstutil::prettyprint_usize;
@@ -106,7 +106,7 @@ impl<T: Yvalue<T>> LinePlot<T> {
 
         // TODO Tuned to fit the info panel. Instead these should somehow stretch to fill their
         // container.
-        let width = 0.25 * ctx.canvas.window_width;
+        let width = 0.23 * ctx.canvas.window_width;
         let height = 0.2 * ctx.canvas.window_height;
 
         let mut grid_batch = GeomBatch::new();
@@ -201,7 +201,7 @@ impl<T: Yvalue<T>> LinePlot<T> {
             draw_grid: ctx.upload(grid_batch),
             closest,
             max_x,
-            max_y: max_y,
+            max_y,
 
             top_left: ScreenPt::new(0.0, 0.0),
             dims: ScreenDims::new(width, height),
@@ -217,7 +217,8 @@ impl<T: Yvalue<T>> LinePlot<T> {
             for (color, poly) in Text::from(Line(t.to_string())).render_ctx(ctx).consume() {
                 batch.fancy_push(color, poly.rotate(Angle::new_degs(-15.0)));
             }
-            row.push(Widget::draw_batch(ctx, batch.autocrop()));
+            // The text is already scaled; don't use Widget::draw_batch and scale it again.
+            row.push(JustDraw::wrap(ctx, batch.autocrop()));
         }
         let x_axis = Widget::row(row).padding(10);
 
@@ -278,7 +279,7 @@ impl<T: Yvalue<T>> WidgetImpl for LinePlot<T> {
                         txt.add(Line(format!(
                             "{}: at {}, {}",
                             label,
-                            t,
+                            t.ampm_tostring(),
                             self.max_y.from_percent(y_percent).prettyprint()
                         )));
                     }

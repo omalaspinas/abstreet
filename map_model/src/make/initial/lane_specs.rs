@@ -1,5 +1,5 @@
 use crate::{osm, LaneType};
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::{fmt, iter};
 
@@ -73,17 +73,28 @@ pub fn get_lane_types(osm_tags: &BTreeMap<String, String>) -> (Vec<LaneType>, Ve
         }
     };
 
-    let mut fwd_side: Vec<LaneType> = iter::repeat(LaneType::Driving)
-        .take(num_driving_fwd)
-        .collect();
-    let mut back_side: Vec<LaneType> = iter::repeat(LaneType::Driving)
-        .take(num_driving_back)
-        .collect();
+    // Sup West Seattle
+    let driving_lane = if osm_tags.get("access") == Some(&"no".to_string())
+        && osm_tags.get("bus") == Some(&"yes".to_string())
+    {
+        LaneType::Bus
+    } else if osm_tags.get("highway") == Some(&"construction".to_string()) {
+        LaneType::Construction
+    } else {
+        LaneType::Driving
+    };
+
+    let mut fwd_side: Vec<LaneType> = iter::repeat(driving_lane).take(num_driving_fwd).collect();
+    let mut back_side: Vec<LaneType> = iter::repeat(driving_lane).take(num_driving_back).collect();
     // TODO Fix upstream. https://wiki.openstreetmap.org/wiki/Key:centre_turn_lane
     if osm_tags.get("lanes:both_ways") == Some(&"1".to_string())
         || osm_tags.get("centre_turn_lane") == Some(&"yes".to_string())
     {
         fwd_side.insert(0, LaneType::SharedLeftTurn);
+    }
+
+    if driving_lane == LaneType::Construction {
+        return (fwd_side, back_side);
     }
 
     // TODO Handle bus lanes properly.
@@ -111,20 +122,22 @@ pub fn get_lane_types(osm_tags: &BTreeMap<String, String>) -> (Vec<LaneType>, Ve
         }
     }
 
-    fn has_parking(value: Option<&String>) -> bool {
-        value == Some(&"parallel".to_string())
-            || value == Some(&"diagonal".to_string())
-            || value == Some(&"perpendicular".to_string())
-    }
-    let parking_lane_fwd = has_parking(osm_tags.get(osm::PARKING_RIGHT))
-        || has_parking(osm_tags.get(osm::PARKING_BOTH));
-    let parking_lane_back = has_parking(osm_tags.get(osm::PARKING_LEFT))
-        || has_parking(osm_tags.get(osm::PARKING_BOTH));
-    if parking_lane_fwd {
-        fwd_side.push(LaneType::Parking);
-    }
-    if parking_lane_back {
-        back_side.push(LaneType::Parking);
+    if driving_lane == LaneType::Driving {
+        fn has_parking(value: Option<&String>) -> bool {
+            value == Some(&"parallel".to_string())
+                || value == Some(&"diagonal".to_string())
+                || value == Some(&"perpendicular".to_string())
+        }
+        let parking_lane_fwd = has_parking(osm_tags.get(osm::PARKING_RIGHT))
+            || has_parking(osm_tags.get(osm::PARKING_BOTH));
+        let parking_lane_back = has_parking(osm_tags.get(osm::PARKING_LEFT))
+            || has_parking(osm_tags.get(osm::PARKING_BOTH));
+        if parking_lane_fwd {
+            fwd_side.push(LaneType::Parking);
+        }
+        if parking_lane_back {
+            back_side.push(LaneType::Parking);
+        }
     }
 
     // TODO Need to snap separate sidewalks to ways. Until then, just do this.

@@ -127,14 +127,30 @@ impl GeomBatch {
         scale: f64,
         rotate: Angle,
         rewrite: RewriteColor,
+        map_space: bool,
     ) {
         self.add_transformed(
-            svg::load_svg(prerender, filename).0,
+            svg::load_svg(
+                prerender,
+                filename,
+                if map_space {
+                    1.0
+                } else {
+                    *prerender.assets.scale_factor.borrow()
+                },
+            )
+            .0,
             center,
             scale,
             rotate,
             rewrite,
         );
+    }
+
+    /// Parse an SVG string and add it to the batch.
+    pub fn add_svg_contents(&mut self, raw: Vec<u8>) {
+        let svg_tree = usvg::Tree::from_data(&raw, &usvg::Options::default()).unwrap();
+        svg::add_svg_inner(self, svg_tree, svg::HIGH_QUALITY, 1.0).unwrap();
     }
 
     /// Adds geometry from another batch to the current batch, first centering it on the given
@@ -179,6 +195,14 @@ impl GeomBatch {
             self.fancy_push(color, poly.translate(dx, dy));
         }
     }
+
+    /// Scales the batch by some factor.
+    pub fn scale(mut self, factor: f64) -> GeomBatch {
+        for (_, poly) in &mut self.list {
+            *poly = poly.scale(factor);
+        }
+        self
+    }
 }
 
 pub enum RewriteColor {
@@ -186,6 +210,7 @@ pub enum RewriteColor {
     Change(Color, Color),
     ChangeMore(Vec<(Color, Color)>),
     ChangeAll(Color),
+    ChangeAlpha(f32),
 }
 
 impl RewriteColor {
@@ -208,6 +233,7 @@ impl RewriteColor {
                 c
             }
             RewriteColor::ChangeAll(to) => *to,
+            RewriteColor::ChangeAlpha(alpha) => c.alpha(*alpha),
         }
     }
 }

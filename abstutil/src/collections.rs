@@ -62,6 +62,7 @@ where
 #[derive(Clone)]
 pub struct Counter<T: Ord + PartialEq + Clone> {
     map: BTreeMap<T, usize>,
+    sum: usize,
 }
 
 impl<T: Ord + PartialEq + Clone> Default for Counter<T> {
@@ -74,13 +75,18 @@ impl<T: Ord + PartialEq + Clone> Counter<T> {
     pub fn new() -> Counter<T> {
         Counter {
             map: BTreeMap::new(),
+            sum: 0,
         }
     }
 
-    pub fn inc(&mut self, val: T) -> usize {
+    pub fn add(&mut self, val: T, amount: usize) -> usize {
         let entry = self.map.entry(val).or_insert(0);
-        *entry += 1;
+        *entry += amount;
+        self.sum += amount;
         *entry
+    }
+    pub fn inc(&mut self, val: T) -> usize {
+        self.add(val, 1)
     }
 
     pub fn get(&self, val: T) -> usize {
@@ -93,6 +99,29 @@ impl<T: Ord + PartialEq + Clone> Counter<T> {
         list.into_iter().map(|(t, _)| t).collect()
     }
 
+    pub fn max(&self) -> usize {
+        *self.map.values().max().unwrap()
+    }
+    pub fn sum(&self) -> usize {
+        self.sum
+    }
+
+    pub fn compare(mut self, mut other: Counter<T>) -> Vec<(T, usize, usize)> {
+        for key in self.map.keys() {
+            other.map.entry(key.clone()).or_insert(0);
+        }
+        for key in other.map.keys() {
+            self.map.entry(key.clone()).or_insert(0);
+        }
+        self.map
+            .into_iter()
+            .map(|(k, cnt)| (k.clone(), cnt, other.map[&k]))
+            .collect()
+    }
+
+    pub fn borrow(&self) -> &BTreeMap<T, usize> {
+        &self.map
+    }
     pub fn consume(self) -> BTreeMap<T, usize> {
         self.map
     }

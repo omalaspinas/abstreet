@@ -1,11 +1,9 @@
 use crate::challenges::HighScore;
 use crate::colors::ColorScheme;
 use crate::helpers::ID;
-use crate::layer::Layers;
+use crate::layer::Layer;
 use crate::options::Options;
-use crate::render::{
-    AgentCache, AgentColorScheme, DrawMap, DrawOptions, Renderable, MIN_ZOOM_FOR_DETAIL,
-};
+use crate::render::{AgentCache, AgentColorScheme, DrawMap, DrawOptions, Renderable};
 use crate::sandbox::{GameplayMode, TutorialState};
 use abstutil::{MeasureMemory, Timer};
 use ezgui::{EventCtx, GfxCtx, Prerender};
@@ -29,10 +27,13 @@ pub struct App {
     pub opts: Options,
 
     pub per_obj: PerObjectActions,
-    pub layer: Layers,
+    pub layer: Option<Box<dyn Layer>>,
 
     // Static data that lasts the entire session. Use sparingly.
     pub session: SessionState,
+
+    // Only filled out in edit mode. Stored here once to avoid lots of clones. Used for preview.
+    pub suspended_sim: Option<Sim>,
 }
 
 impl App {
@@ -77,8 +78,9 @@ impl App {
             cs,
             opts,
             per_obj: PerObjectActions::new(),
-            layer: Layers::Inactive,
+            layer: None,
             session: SessionState::empty(),
+            suspended_sim: None,
         }
     }
 
@@ -90,6 +92,48 @@ impl App {
     }
     pub fn set_prebaked(&mut self, prebaked: Option<(String, String, Analytics)>) {
         self.prebaked = prebaked;
+
+        if false {
+            if let Some((_, _, ref a)) = self.prebaked {
+                use abstutil::{prettyprint_usize, serialized_size_bytes};
+                println!(
+                    "- road_thruput: {} bytes",
+                    prettyprint_usize(serialized_size_bytes(&a.road_thruput))
+                );
+                println!(
+                    "- intersection_thruput: {} bytes",
+                    prettyprint_usize(serialized_size_bytes(&a.intersection_thruput))
+                );
+                println!(
+                    "- bus_arrivals : {} bytes",
+                    prettyprint_usize(serialized_size_bytes(&a.bus_arrivals))
+                );
+                println!(
+                    "- bus_passengers_waiting: {} bytes",
+                    prettyprint_usize(serialized_size_bytes(&a.bus_passengers_waiting))
+                );
+                println!(
+                    "- started_trips: {} bytes",
+                    prettyprint_usize(serialized_size_bytes(&a.started_trips))
+                );
+                println!(
+                    "- finished_trips: {} bytes",
+                    prettyprint_usize(serialized_size_bytes(&a.finished_trips))
+                );
+                println!(
+                    "- trip_log: {} bytes",
+                    prettyprint_usize(serialized_size_bytes(&a.trip_log))
+                );
+                println!(
+                    "- intersection_delays: {} bytes",
+                    prettyprint_usize(serialized_size_bytes(&a.intersection_delays))
+                );
+                println!(
+                    "- parking_spot_changes: {} bytes",
+                    prettyprint_usize(serialized_size_bytes(&a.parking_spot_changes))
+                );
+            }
+        }
     }
 
     pub fn switch_map(&mut self, ctx: &mut EventCtx, load: String) {
@@ -113,7 +157,7 @@ impl App {
         g.clear(self.cs.void_background);
         g.redraw(&self.primary.draw_map.boundary_polygon);
 
-        if g.canvas.cam_zoom < MIN_ZOOM_FOR_DETAIL && !g.is_screencap() {
+        if g.canvas.cam_zoom < self.opts.min_zoom_for_detail && !g.is_screencap() {
             // Unzoomed mode
             let layers = show_objs.layers();
             if layers.show_areas {
@@ -130,14 +174,6 @@ impl App {
                 // Not the building paths
             }
 
-            if layers.show_extra_shapes {
-                for es in &self.primary.draw_map.extra_shapes {
-                    if show_objs.show(&es.get_id()) {
-                        es.draw(g, self, &opts);
-                    }
-                }
-            }
-
             // Still show some shape selection when zoomed out.
             // TODO Refactor! Ideally use get_obj
             if let Some(ID::Area(id)) = self.primary.current_selection {
@@ -147,15 +183,6 @@ impl App {
                         .primary
                         .draw_map
                         .get_a(id)
-                        .get_outline(&self.primary.map),
-                );
-            } else if let Some(ID::ExtraShape(id)) = self.primary.current_selection {
-                g.draw_polygon(
-                    self.cs.selected,
-                    &self
-                        .primary
-                        .draw_map
-                        .get_es(id)
                         .get_outline(&self.primary.map),
                 );
             } else if let Some(ID::Road(id)) = self.primary.current_selection {
@@ -178,7 +205,11 @@ impl App {
                 &self.primary.map,
                 &self.agent_cs,
                 g,
-                Distance::meters(10.0) / g.canvas.cam_zoom,
+                if self.opts.large_unzoomed_agents {
+                    Some(Distance::meters(10.0) / g.canvas.cam_zoom)
+                } else {
+                    None
+                },
             );
         } else {
             let mut cache = self.primary.draw_map.agents.borrow_mut();
@@ -201,6 +232,7 @@ impl App {
                         if !drawn_all_buildings {
                             g.redraw(&self.primary.draw_map.draw_all_building_paths);
                             g.redraw(&self.primary.draw_map.draw_all_buildings);
+                            g.redraw(&self.primary.draw_map.draw_all_building_outlines);
                             drawn_all_buildings = true;
                         }
                     }
@@ -238,6 +270,7 @@ impl App {
             &ShowEverything::new(),
             false,
             false,
+            false,
         );
     }
 
@@ -251,10 +284,11 @@ impl App {
         show_objs: &dyn ShowObject,
         debug_mode: bool,
         unzoomed_roads_and_intersections: bool,
+        unzoomed_buildings: bool,
     ) -> Option<ID> {
-        // Unzoomed mode. Ignore when debugging areas and extra shapes.
-        if ctx.canvas.cam_zoom < MIN_ZOOM_FOR_DETAIL
-            && !(debug_mode || unzoomed_roads_and_intersections)
+        // Unzoomed mode. Ignore when debugging areas.
+        if ctx.canvas.cam_zoom < self.opts.min_zoom_for_detail
+            && !(debug_mode || unzoomed_roads_and_intersections || unzoomed_buildings)
         {
             return None;
         }
@@ -273,27 +307,32 @@ impl App {
 
         for obj in objects {
             match obj.get_id() {
-                ID::Area(_) | ID::ExtraShape(_) => {
+                ID::Area(_) => {
                     if !debug_mode {
                         continue;
                     }
                 }
                 ID::Road(_) => {
                     if !unzoomed_roads_and_intersections
-                        || ctx.canvas.cam_zoom >= MIN_ZOOM_FOR_DETAIL
+                        || ctx.canvas.cam_zoom >= self.opts.min_zoom_for_detail
                     {
                         continue;
                     }
                 }
                 ID::Intersection(_) => {
-                    if ctx.canvas.cam_zoom < MIN_ZOOM_FOR_DETAIL
+                    if ctx.canvas.cam_zoom < self.opts.min_zoom_for_detail
                         && !unzoomed_roads_and_intersections
                     {
                         continue;
                     }
                 }
+                ID::Building(_) => {
+                    if ctx.canvas.cam_zoom < self.opts.min_zoom_for_detail && !unzoomed_buildings {
+                        continue;
+                    }
+                }
                 _ => {
-                    if ctx.canvas.cam_zoom < MIN_ZOOM_FOR_DETAIL {
+                    if ctx.canvas.cam_zoom < self.opts.min_zoom_for_detail {
                         continue;
                     }
                 }
@@ -323,7 +362,6 @@ impl App {
         let mut roads: Vec<&dyn Renderable> = Vec::new();
         let mut intersections: Vec<&dyn Renderable> = Vec::new();
         let mut buildings: Vec<&dyn Renderable> = Vec::new();
-        let mut extra_shapes: Vec<&dyn Renderable> = Vec::new();
         let mut bus_stops: Vec<&dyn Renderable> = Vec::new();
         let mut agents_on: Vec<Traversable> = Vec::new();
 
@@ -353,7 +391,6 @@ impl App {
                 // probably just need to make them go around other buildings instead of having
                 // two passes through buildings.
                 ID::Building(id) => buildings.push(draw_map.get_b(id)),
-                ID::ExtraShape(id) => extra_shapes.push(draw_map.get_es(id)),
 
                 ID::BusStop(_) | ID::Turn(_) | ID::Car(_) | ID::Pedestrian(_) | ID::PedCrowd(_) => {
                     panic!("{:?} shouldn't be in the quadtree", id)
@@ -368,7 +405,6 @@ impl App {
         borrows.extend(roads);
         borrows.extend(intersections);
         borrows.extend(buildings);
-        borrows.extend(extra_shapes);
         borrows.extend(bus_stops);
 
         // Expand all of the Traversables into agents, populating the cache if needed.
@@ -396,7 +432,6 @@ pub struct ShowLayers {
     pub show_intersections: bool,
     pub show_lanes: bool,
     pub show_areas: bool,
-    pub show_extra_shapes: bool,
     pub show_labels: bool,
 }
 
@@ -407,7 +442,6 @@ impl ShowLayers {
             show_intersections: true,
             show_lanes: true,
             show_areas: true,
-            show_extra_shapes: true,
             show_labels: false,
         }
     }
@@ -443,7 +477,6 @@ impl ShowObject for ShowEverything {
 #[derive(Clone)]
 pub struct Flags {
     pub sim_flags: SimFlags,
-    pub kml: Option<String>,
     pub draw_lane_markings: bool,
     // Number of agents to generate when requested. If unspecified, trips to/from borders will be
     // included.

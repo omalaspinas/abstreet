@@ -1,4 +1,4 @@
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 // Stores in radians
@@ -62,5 +62,13 @@ impl Angle {
 impl fmt::Display for Angle {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Angle({} degrees)", self.normalized_degrees())
+    }
+}
+
+impl std::ops::Neg for Angle {
+    type Output = Angle;
+
+    fn neg(self) -> Angle {
+        Angle::new(-self.0)
     }
 }

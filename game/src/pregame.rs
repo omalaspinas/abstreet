@@ -1,7 +1,8 @@
 use crate::app::App;
 use crate::challenges::challenges_picker;
 use crate::devtools::DevToolsMode;
-use crate::game::{State, Transition};
+use crate::edit::apply_map_edits;
+use crate::game::{msg, State, Transition};
 use crate::managed::{Callback, ManagedGUIState, WrappedComposite, WrappedOutcome};
 use crate::sandbox::{GameplayMode, SandboxMode, TutorialPointer};
 use ezgui::{
@@ -10,7 +11,7 @@ use ezgui::{
 };
 use geom::{Duration, Line, Pt2D, Speed};
 use instant::Instant;
-use map_model::{Map, MapEdits};
+use map_model::{Map, PermanentMapEdits};
 use rand::Rng;
 use rand_xorshift::XorShiftRng;
 
@@ -119,21 +120,31 @@ pub fn main_menu(ctx: &mut EventCtx, app: &App) -> Box<dyn State> {
                     txt
                 })
                 .build_def(ctx, hotkey(Key::P)),
-            if app.opts.dev {
-                Btn::text_bg2("Internal Dev Tools").build_def(ctx, hotkey(Key::M))
-            } else {
-                Widget::nothing()
-            },
+            Btn::text_bg2("Contribute parking data to OpenStreetMap")
+                .tooltip({
+                    let mut txt = Text::tooltip(
+                        ctx,
+                        hotkey(Key::M),
+                        "Contribute parking data to OpenStreetMap",
+                    );
+                    txt.add(Line("Improve parking data in OpenStreetMap").small());
+                    txt
+                })
+                .build_def(ctx, hotkey(Key::M)),
+            Btn::text_bg2("Internal Dev Tools").build_def(ctx, hotkey(Key::D)),
         ])
         .centered(),
         Widget::col(vec![
-            Btn::text_bg2("About").build_def(ctx, None),
+            Widget::row(vec![
+                Btn::text_bg2("About").build_def(ctx, None).margin_right(20),
+                Btn::text_bg2("Feedback").build_def(ctx, None),
+            ]),
             built_info::time().draw(ctx),
         ])
         .centered(),
     ];
 
-    let mut c = WrappedComposite::new(
+    let c = WrappedComposite::new(
         Composite::new(Widget::col(col).evenly_spaced())
             .exact_size_percent(90, 85)
             .build(ctx),
@@ -196,15 +207,28 @@ pub fn main_menu(ctx: &mut EventCtx, app: &App) -> Box<dyn State> {
         Box::new(|ctx, _| Some(Transition::Push(about(ctx)))),
     )
     .cb(
+        "Feedback",
+        Box::new(|_, _| {
+            let _ = webbrowser::open("https://forms.gle/ocvbek1bTaZUr3k49");
+            None
+        }),
+    )
+    .cb(
         "Community Proposals",
         Box::new(|ctx, app| Some(Transition::Push(proposals_picker(ctx, app)))),
+    )
+    .cb(
+        "Contribute parking data to OpenStreetMap",
+        Box::new(|ctx, app| {
+            Some(Transition::Push(
+                crate::devtools::mapping::ParkingMapper::new(ctx, app),
+            ))
+        }),
+    )
+    .cb(
+        "Internal Dev Tools",
+        Box::new(|ctx, app| Some(Transition::Push(DevToolsMode::new(ctx, app)))),
     );
-    if app.opts.dev {
-        c = c.cb(
-            "Internal Dev Tools",
-            Box::new(|ctx, app| Some(Transition::Push(DevToolsMode::new(ctx, app)))),
-        );
-    }
     ManagedGUIState::fullscreen(c)
 }
 
@@ -219,10 +243,6 @@ fn about(ctx: &mut EventCtx) -> Box<dyn State> {
             txt.add(Line("Created by Dustin Carlino, UX by Yuwen Li"));
             txt.add(Line(""));
             txt.add(Line("Map data from OpenStreetMap and King County GIS"));
-            // TODO Add more here
-            txt.add(Line(
-                "See full credits at https://github.com/dabreegster/abstreet#credits",
-            ));
             txt.add(Line(""));
             // TODO Word wrapping please?
             txt.add(Line(
@@ -249,6 +269,9 @@ fn about(ctx: &mut EventCtx) -> Box<dyn State> {
             txt.add(Line("Have the appropriate amount of fun."));
             txt.draw(ctx).centered_horiz().align_vert_center()
         },
+        Btn::text_bg2("See full credits")
+            .build_def(ctx, None)
+            .centered_horiz(),
     ];
 
     ManagedGUIState::fullscreen(
@@ -257,40 +280,69 @@ fn about(ctx: &mut EventCtx) -> Box<dyn State> {
                 .exact_size_percent(90, 85)
                 .build(ctx),
         )
-        .cb("back", Box::new(|_, _| Some(Transition::Pop))),
+        .cb("back", Box::new(|_, _| Some(Transition::Pop)))
+        .cb(
+            "See full credits",
+            Box::new(|_, _| {
+                let _ = webbrowser::open("https://github.com/dabreegster/abstreet#credits");
+                None
+            }),
+        ),
     )
 }
 
 fn proposals_picker(ctx: &mut EventCtx, app: &App) -> Box<dyn State> {
     let mut cbs: Vec<(String, Callback)> = Vec::new();
     let mut buttons: Vec<Widget> = Vec::new();
-    for map_name in abstutil::list_all_objects(abstutil::path_all_maps()) {
-        for (_, edits) in
-            abstutil::load_all_objects::<MapEdits>(abstutil::path_all_edits(&map_name))
-        {
-            if !edits.proposal_description.is_empty() {
-                let mut txt = Text::new();
-                for l in &edits.proposal_description {
-                    txt.add(Line(l));
-                }
-                let path = abstutil::path_edits(&edits.map_name, &edits.edits_name);
-                buttons.push(Btn::custom_text_fg(txt).build(ctx, &path, None));
-                cbs.push((
-                    path,
-                    Box::new(move |ctx, app| {
-                        // TODO apply edits
-                        Some(Transition::Push(Box::new(SandboxMode::new(
-                            ctx,
-                            app,
-                            GameplayMode::PlayScenario(
-                                abstutil::path_map(&edits.map_name),
-                                "weekday".to_string(),
-                            ),
-                        ))))
-                    }),
-                ));
-            }
+    for (name, edits) in
+        abstutil::load_all_objects::<PermanentMapEdits>("../data/system/proposals".to_string())
+    {
+        let mut txt = Text::new();
+        txt.add(Line(&edits.proposal_description[0]));
+        for l in edits.proposal_description.iter().skip(1) {
+            txt.add(Line(l).secondary());
         }
+        let path = format!("../data/system/proposals/{}.json", name);
+        buttons.push(
+            Btn::text_bg(&path, txt, app.cs.section_bg, app.cs.hovering)
+                .tooltip(Text::new())
+                .build_def(ctx, None),
+        );
+        cbs.push((
+            path,
+            Box::new(move |ctx, app| {
+                // Apply edits before setting up the sandbox, for simplicity
+                let map_name = edits.map_name.clone();
+                let edits = edits.clone();
+                let maybe_err = ctx.loading_screen("apply edits", |ctx, mut timer| {
+                    if &edits.map_name != app.primary.map.get_name() {
+                        app.switch_map(ctx, abstutil::path_map(&edits.map_name));
+                    }
+                    match PermanentMapEdits::from_permanent(edits, &app.primary.map) {
+                        Ok(edits) => {
+                            apply_map_edits(ctx, app, edits);
+                            app.primary
+                                .map
+                                .recalculate_pathfinding_after_edits(&mut timer);
+                            None
+                        }
+                        Err(err) => Some(err),
+                    }
+                });
+                if let Some(err) = maybe_err {
+                    Some(Transition::Push(msg("Can't load proposal", vec![err])))
+                } else {
+                    Some(Transition::Push(Box::new(SandboxMode::new(
+                        ctx,
+                        app,
+                        GameplayMode::PlayScenario(
+                            abstutil::path_map(&map_name),
+                            "weekday".to_string(),
+                        ),
+                    ))))
+                }
+            }),
+        ));
     }
 
     let mut c = WrappedComposite::new(

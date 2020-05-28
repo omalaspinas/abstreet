@@ -3,7 +3,7 @@ use crate::colors::ColorScheme;
 use crate::helpers::ID;
 use crate::render::{DrawOptions, Renderable, OUTLINE_THICKNESS};
 use ezgui::{Color, Drawable, GeomBatch, GfxCtx, Line, Prerender, RewriteColor, Text};
-use geom::{Angle, Distance, PolyLine, Polygon, Pt2D};
+use geom::{Angle, ArrowCap, Distance, PolyLine, Polygon, Pt2D};
 use map_model::{Map, TurnType};
 use sim::{CarID, CarStatus, DrawCarInput, VehicleType};
 
@@ -21,6 +21,25 @@ pub struct DrawCar {
 impl DrawCar {
     pub fn new(input: DrawCarInput, map: &Map, prerender: &Prerender, cs: &ColorScheme) -> DrawCar {
         let mut draw_default = GeomBatch::new();
+
+        // Wheels
+        for side in vec![
+            input.body.shift_right(CAR_WIDTH / 2.0).unwrap(),
+            input.body.shift_left(CAR_WIDTH / 2.0).unwrap(),
+        ] {
+            let len = side.length();
+            draw_default.push(
+                cs.bike_frame,
+                side.exact_slice(Distance::meters(0.5), Distance::meters(1.0))
+                    .make_polygons(OUTLINE_THICKNESS / 2.0),
+            );
+            draw_default.push(
+                cs.bike_frame,
+                side.exact_slice(len - Distance::meters(2.0), len - Distance::meters(1.5))
+                    .make_polygons(OUTLINE_THICKNESS / 2.0),
+            );
+        }
+
         let body_polygon = {
             let len = input.body.length();
             let front_corner = len - Distance::meters(1.0);
@@ -49,6 +68,7 @@ impl DrawCar {
                 0.01,
                 Angle::ZERO,
                 RewriteColor::NoOp,
+                true,
             );
         }
 
@@ -58,7 +78,7 @@ impl DrawCar {
 
             if let Some(t) = input.waiting_for_turn {
                 match map.get_t(t).turn_type {
-                    TurnType::Left | TurnType::LaneChangeLeft => {
+                    TurnType::Left => {
                         let (pos, angle) = input
                             .body
                             .dist_along(input.body.length() - Distance::meters(2.5));
@@ -69,11 +89,11 @@ impl DrawCar {
                                 pos.project_away(arrow_len / 2.0, angle.rotate_degs(90.0)),
                                 pos.project_away(arrow_len / 2.0, angle.rotate_degs(-90.0)),
                             ])
-                            .make_arrow(arrow_thickness)
+                            .make_arrow(arrow_thickness, ArrowCap::Triangle)
                             .unwrap(),
                         );
                     }
-                    TurnType::Right | TurnType::LaneChangeRight => {
+                    TurnType::Right => {
                         let (pos, angle) = input
                             .body
                             .dist_along(input.body.length() - Distance::meters(2.5));
@@ -84,11 +104,11 @@ impl DrawCar {
                                 pos.project_away(arrow_len / 2.0, angle.rotate_degs(-90.0)),
                                 pos.project_away(arrow_len / 2.0, angle.rotate_degs(90.0)),
                             ])
-                            .make_arrow(arrow_thickness)
+                            .make_arrow(arrow_thickness, ArrowCap::Triangle)
                             .unwrap(),
                         );
                     }
-                    TurnType::Straight => {}
+                    TurnType::Straight | TurnType::LaneChangeLeft | TurnType::LaneChangeRight => {}
                     TurnType::Crosswalk | TurnType::SharedSidewalkCorner => unreachable!(),
                 }
 
